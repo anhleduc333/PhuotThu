@@ -5,12 +5,10 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('PhuotThu')),
-      body: const Center(
-        child: Text(
-          'Sẵn sàng cho hành trình đầu tiên',
-          textAlign: TextAlign.center,
+    return const Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Text('Trang chủ PhuotThu', textAlign: TextAlign.center),
         ),
       ),
     );
