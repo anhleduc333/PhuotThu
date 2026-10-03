@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/theme/app_theme.dart';
-import 'router/app_router.dart';
 
 class PhuotThuApp extends StatelessWidget {
-  const PhuotThuApp({super.key});
+  const PhuotThuApp({required this.router, super.key});
+
+  final GoRouter router;
 
   @override
   Widget build(BuildContext context) {
@@ -12,7 +14,7 @@ class PhuotThuApp extends StatelessWidget {
       title: 'PhuotThu',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
-      routerConfig: appRouter,
+      routerConfig: router,
     );
   }
 }

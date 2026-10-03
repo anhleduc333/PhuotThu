@@ -1,19 +1,18 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:phuotthu/app/app.dart';
+import 'package:phuotthu/app/router/app_router.dart';
 
 void main() {
-  testWidgets('PhuotThu main navigation is displayed', (tester) async {
-    await tester.pumpWidget(const ProviderScope(child: PhuotThuApp()));
+  testWidgets('Unauthenticated user is redirected to login', (tester) async {
+    final router = createAppRouter(isAuthenticated: () => false);
+
+    await tester.pumpWidget(ProviderScope(child: PhuotThuApp(router: router)));
 
     await tester.pumpAndSettle();
 
-    expect(find.text('Trang chủ PhuotThu'), findsOneWidget);
+    expect(find.text('Đăng nhập'), findsOneWidget);
 
-    expect(find.text('Trang chủ'), findsOneWidget);
-    expect(find.text('Chuyến đi'), findsOneWidget);
-    expect(find.text('Bản đồ'), findsOneWidget);
-    expect(find.text('Cộng đồng'), findsOneWidget);
-    expect(find.text('Cá nhân'), findsOneWidget);
+    expect(find.text('Đăng nhập để bắt đầu hành trình'), findsOneWidget);
   });
 }
