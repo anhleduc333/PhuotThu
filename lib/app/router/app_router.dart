@@ -8,6 +8,7 @@ import '../../features/home/presentation/pages/home_page.dart';
 import '../../features/map/presentation/pages/map_page.dart';
 import '../../features/profile/presentation/pages/edit_profile_page.dart';
 import '../../features/profile/presentation/pages/profile_page.dart';
+import '../../features/trips/presentation/pages/trip_form_page.dart';
 import '../../features/trips/presentation/pages/trips_page.dart';
 import '../../features/vehicle/presentation/pages/vehicle_form_page.dart';
 import '../../features/vehicle/presentation/pages/vehicles_page.dart';
@@ -24,15 +25,18 @@ GoRouter createAppRouter({
       final loggedIn = isAuthenticated();
 
       final onLogin = state.matchedLocation == '/login';
-
       final onRegister = state.matchedLocation == '/register';
 
       final onAuthPage = onLogin || onRegister;
 
+      // Chưa đăng nhập:
+      // chỉ cho phép truy cập Login và Register.
       if (!loggedIn && !onAuthPage) {
         return '/login';
       }
 
+      // Đã đăng nhập:
+      // không quay lại Login hoặc Register.
       if (loggedIn && onAuthPage) {
         return '/';
       }
@@ -40,6 +44,10 @@ GoRouter createAppRouter({
       return null;
     },
     routes: [
+      // ========================================================
+      // AUTH
+      // ========================================================
+
       GoRoute(
         path: '/login',
         name: 'login',
@@ -56,6 +64,9 @@ GoRouter createAppRouter({
         },
       ),
 
+      // ========================================================
+      // MAIN APPLICATION SHELL
+      // ========================================================
       StatefulShellRoute.indexedStack(
         builder:
             (
@@ -66,6 +77,10 @@ GoRouter createAppRouter({
               return MainShell(navigationShell: navigationShell);
             },
         branches: [
+          // ====================================================
+          // 1. HOME
+          // ====================================================
+
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -78,6 +93,9 @@ GoRouter createAppRouter({
             ],
           ),
 
+          // ====================================================
+          // 2. TRIPS
+          // ====================================================
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -86,10 +104,27 @@ GoRouter createAppRouter({
                 builder: (context, state) {
                   return const TripsPage();
                 },
+                routes: [
+                  // ------------------------------------------------
+                  // Create Trip
+                  // URL: /trips/create
+                  // ------------------------------------------------
+
+                  GoRoute(
+                    path: 'create',
+                    name: 'trip-create',
+                    builder: (context, state) {
+                      return const TripFormPage();
+                    },
+                  ),
+                ],
               ),
             ],
           ),
 
+          // ====================================================
+          // 3. MAP
+          // ====================================================
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -102,6 +137,9 @@ GoRouter createAppRouter({
             ],
           ),
 
+          // ====================================================
+          // 4. COMMUNITY
+          // ====================================================
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -114,6 +152,9 @@ GoRouter createAppRouter({
             ],
           ),
 
+          // ====================================================
+          // 5. PROFILE
+          // ====================================================
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -123,6 +164,11 @@ GoRouter createAppRouter({
                   return const ProfilePage();
                 },
                 routes: [
+                  // ------------------------------------------------
+                  // Edit Profile
+                  // URL: /profile/edit
+                  // ------------------------------------------------
+
                   GoRoute(
                     path: 'edit',
                     name: 'edit-profile',
@@ -131,6 +177,10 @@ GoRouter createAppRouter({
                     },
                   ),
 
+                  // ------------------------------------------------
+                  // Vehicles
+                  // URL: /profile/vehicles
+                  // ------------------------------------------------
                   GoRoute(
                     path: 'vehicles',
                     name: 'vehicles',
@@ -138,6 +188,11 @@ GoRouter createAppRouter({
                       return const VehiclesPage();
                     },
                     routes: [
+                      // --------------------------------------------
+                      // Add Vehicle
+                      // URL: /profile/vehicles/add
+                      // --------------------------------------------
+
                       GoRoute(
                         path: 'add',
                         name: 'vehicle-add',
@@ -146,6 +201,11 @@ GoRouter createAppRouter({
                         },
                       ),
 
+                      // --------------------------------------------
+                      // Edit Vehicle
+                      // URL:
+                      // /profile/vehicles/{vehicleId}/edit
+                      // --------------------------------------------
                       GoRoute(
                         path: ':vehicleId/edit',
                         name: 'vehicle-edit',
