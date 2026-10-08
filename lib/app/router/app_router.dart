@@ -6,8 +6,11 @@ import '../../features/auth/presentation/pages/register_page.dart';
 import '../../features/community/presentation/pages/community_page.dart';
 import '../../features/home/presentation/pages/home_page.dart';
 import '../../features/map/presentation/pages/map_page.dart';
+import '../../features/profile/presentation/pages/edit_profile_page.dart';
 import '../../features/profile/presentation/pages/profile_page.dart';
 import '../../features/trips/presentation/pages/trips_page.dart';
+import '../../features/vehicle/presentation/pages/vehicle_form_page.dart';
+import '../../features/vehicle/presentation/pages/vehicles_page.dart';
 import '../shell/main_shell.dart';
 
 GoRouter createAppRouter({
@@ -44,6 +47,7 @@ GoRouter createAppRouter({
           return const LoginPage();
         },
       ),
+
       GoRoute(
         path: '/register',
         name: 'register',
@@ -51,6 +55,7 @@ GoRouter createAppRouter({
           return const RegisterPage();
         },
       ),
+
       StatefulShellRoute.indexedStack(
         builder:
             (
@@ -72,6 +77,7 @@ GoRouter createAppRouter({
               ),
             ],
           ),
+
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -83,6 +89,7 @@ GoRouter createAppRouter({
               ),
             ],
           ),
+
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -94,6 +101,7 @@ GoRouter createAppRouter({
               ),
             ],
           ),
+
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -105,6 +113,7 @@ GoRouter createAppRouter({
               ),
             ],
           ),
+
           StatefulShellBranch(
             routes: [
               GoRoute(
@@ -113,6 +122,42 @@ GoRouter createAppRouter({
                 builder: (context, state) {
                   return const ProfilePage();
                 },
+                routes: [
+                  GoRoute(
+                    path: 'edit',
+                    name: 'edit-profile',
+                    builder: (context, state) {
+                      return const EditProfilePage();
+                    },
+                  ),
+
+                  GoRoute(
+                    path: 'vehicles',
+                    name: 'vehicles',
+                    builder: (context, state) {
+                      return const VehiclesPage();
+                    },
+                    routes: [
+                      GoRoute(
+                        path: 'add',
+                        name: 'vehicle-add',
+                        builder: (context, state) {
+                          return const VehicleFormPage();
+                        },
+                      ),
+
+                      GoRoute(
+                        path: ':vehicleId/edit',
+                        name: 'vehicle-edit',
+                        builder: (context, state) {
+                          final vehicleId = state.pathParameters['vehicleId']!;
+
+                          return VehicleFormPage(vehicleId: vehicleId);
+                        },
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ],
           ),
