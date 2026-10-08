@@ -74,4 +74,68 @@ class TripRepository {
       'currency': 'VND',
     });
   }
+
+  Future<void> updateTrip({
+    required String tripId,
+    required String name,
+    String? description,
+    String? vehicleId,
+    DateTime? plannedStartAt,
+    DateTime? plannedEndAt,
+    String? startName,
+    String? destinationName,
+    double? budgetTotal,
+  }) async {
+    final userId = _currentUserId();
+
+    await _client
+        .from('trips')
+        .update({
+          'vehicle_id': vehicleId,
+          'name': name,
+          'description': description,
+          'planned_start_at': plannedStartAt?.toUtc().toIso8601String(),
+          'planned_end_at': plannedEndAt?.toUtc().toIso8601String(),
+          'start_name': startName,
+          'destination_name': destinationName,
+          'budget_total': budgetTotal,
+        })
+        .eq('id', tripId)
+        .eq('owner_id', userId);
+  }
+
+  Future<void> updateTripStatus({
+    required String tripId,
+    required String status,
+  }) async {
+    final userId = _currentUserId();
+
+    const allowedStatuses = {
+      'draft',
+      'planned',
+      'active',
+      'completed',
+      'cancelled',
+    };
+
+    if (!allowedStatuses.contains(status)) {
+      throw ArgumentError('Invalid trip status: $status');
+    }
+
+    await _client
+        .from('trips')
+        .update({'status': status})
+        .eq('id', tripId)
+        .eq('owner_id', userId);
+  }
+
+  Future<void> deleteTrip(String tripId) async {
+    final userId = _currentUserId();
+
+    await _client
+        .from('trips')
+        .delete()
+        .eq('id', tripId)
+        .eq('owner_id', userId);
+  }
 }

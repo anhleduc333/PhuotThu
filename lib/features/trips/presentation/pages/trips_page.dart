@@ -12,19 +12,14 @@ class TripsPage extends ConsumerWidget {
     switch (status) {
       case 'draft':
         return 'Bản nháp';
-
       case 'planned':
         return 'Đã lên kế hoạch';
-
       case 'active':
         return 'Đang diễn ra';
-
       case 'completed':
         return 'Hoàn thành';
-
       case 'cancelled':
         return 'Đã hủy';
-
       default:
         return status;
     }
@@ -38,11 +33,8 @@ class TripsPage extends ConsumerWidget {
     final local = value.toLocal();
 
     final day = local.day.toString().padLeft(2, '0');
-
     final month = local.month.toString().padLeft(2, '0');
-
     final hour = local.hour.toString().padLeft(2, '0');
-
     final minute = local.minute.toString().padLeft(2, '0');
 
     return '$day/$month/${local.year} • $hour:$minute';
@@ -106,6 +98,11 @@ class TripsPage extends ConsumerWidget {
                     trip: trip,
                     statusLabel: _statusLabel(trip.status),
                     startDate: _formatDate(trip.plannedStartAt),
+                    onTap: () async {
+                      await context.push('/trips/${trip.id}');
+
+                      ref.invalidate(currentTripsProvider);
+                    },
                   );
                 },
               ),
@@ -161,34 +158,33 @@ class _TripCard extends StatelessWidget {
     required this.trip,
     required this.statusLabel,
     required this.startDate,
+    required this.onTap,
   });
 
   final Trip trip;
   final String statusLabel;
   final String startDate;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final routeText = [
       if (trip.startName != null && trip.startName!.isNotEmpty) trip.startName!,
-
       if (trip.destinationName != null && trip.destinationName!.isNotEmpty)
         trip.destinationName!,
     ].join(' → ');
 
     return Card(
       child: ListTile(
+        onTap: onTap,
         leading: const CircleAvatar(child: Icon(Icons.route)),
         title: Text(trip.name),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 4),
-
             if (routeText.isNotEmpty) Text(routeText),
-
             Text(startDate),
-
             Text(statusLabel),
           ],
         ),
