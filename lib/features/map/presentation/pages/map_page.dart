@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
+
+import '../../domain/place_result.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -17,9 +20,27 @@ class _MapPageState extends State<MapPage> {
 
   LatLng? _currentLocation;
 
+  PlaceResult? _selectedPlace;
+
   bool _isLocating = false;
 
   String? _locationMessage;
+
+  Future<void> _searchPlace() async {
+    final result = await context.push<PlaceResult>('/map/search');
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    final point = LatLng(result.latitude, result.longitude);
+
+    setState(() {
+      _selectedPlace = result;
+    });
+
+    _mapController.move(point, 16);
+  }
 
   Future<void> _goToCurrentLocation() async {
     if (_isLocating) {
@@ -95,7 +116,7 @@ class _MapPageState extends State<MapPage> {
       });
 
       _mapController.move(location, 16);
-    } catch (error) {
+    } catch (_) {
       if (!mounted) {
         return;
       }
@@ -150,6 +171,28 @@ class _MapPageState extends State<MapPage> {
                   ],
                 ),
 
+              if (_selectedPlace != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: LatLng(
+                        _selectedPlace!.latitude,
+                        _selectedPlace!.longitude,
+                      ),
+                      width: 64,
+                      height: 64,
+                      child: Tooltip(
+                        message: _selectedPlace!.name,
+                        child: Icon(
+                          Icons.location_on,
+                          size: 50,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
               const RichAttributionWidget(
                 attributions: [
                   TextSourceAttribution('OpenStreetMap contributors'),
@@ -158,9 +201,79 @@ class _MapPageState extends State<MapPage> {
             ],
           ),
 
+          Positioned(
+            top: 12,
+            left: 16,
+            right: 16,
+            child: Material(
+              elevation: 3,
+              borderRadius: BorderRadius.circular(16),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: _searchPlace,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      Icon(Icons.search),
+                      SizedBox(width: 12),
+                      Expanded(child: Text('Tìm địa điểm...')),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          if (_selectedPlace != null)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 16,
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.location_on_outlined),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _selectedPlace!.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _selectedPlace!.displayName,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _selectedPlace = null;
+                          });
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           if (_locationMessage != null)
             Positioned(
-              top: 12,
+              top: 80,
               left: 16,
               right: 16,
               child: Material(

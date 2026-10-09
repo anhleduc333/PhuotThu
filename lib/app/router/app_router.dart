@@ -6,6 +6,7 @@ import '../../features/auth/presentation/pages/register_page.dart';
 import '../../features/community/presentation/pages/community_page.dart';
 import '../../features/home/presentation/pages/home_page.dart';
 import '../../features/map/presentation/pages/map_page.dart';
+import '../../features/map/presentation/pages/place_search_page.dart';
 import '../../features/profile/presentation/pages/edit_profile_page.dart';
 import '../../features/profile/presentation/pages/profile_page.dart';
 import '../../features/trips/presentation/pages/trip_detail_page.dart';
@@ -130,6 +131,15 @@ GoRouter createAppRouter({
                 builder: (context, state) {
                   return const MapPage();
                 },
+                routes: [
+                  GoRoute(
+                    path: 'search',
+                    name: 'place-search',
+                    builder: (context, state) {
+                      return const PlaceSearchPage();
+                    },
+                  ),
+                ],
               ),
             ],
           ),
