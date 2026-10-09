@@ -23,6 +23,17 @@ class TripRepository {
     return user.id;
   }
 
+  String? _geographyPoint({
+    required double? latitude,
+    required double? longitude,
+  }) {
+    if (latitude == null || longitude == null) {
+      return null;
+    }
+
+    return 'SRID=4326;POINT($longitude $latitude)';
+  }
+
   Future<List<Trip>> getTrips() async {
     final userId = _currentUserId();
 
@@ -55,7 +66,15 @@ class TripRepository {
     DateTime? plannedStartAt,
     DateTime? plannedEndAt,
     String? startName,
+    String? startAddress,
+    String? startPlaceId,
+    double? startLatitude,
+    double? startLongitude,
     String? destinationName,
+    String? destinationAddress,
+    String? destinationPlaceId,
+    double? destinationLatitude,
+    double? destinationLongitude,
     double? budgetTotal,
   }) async {
     final userId = _currentUserId();
@@ -68,8 +87,23 @@ class TripRepository {
       'status': 'draft',
       'planned_start_at': plannedStartAt?.toUtc().toIso8601String(),
       'planned_end_at': plannedEndAt?.toUtc().toIso8601String(),
+
       'start_name': startName,
+      'start_address': startAddress,
+      'start_place_id': startPlaceId,
+      'start_location': _geographyPoint(
+        latitude: startLatitude,
+        longitude: startLongitude,
+      ),
+
       'destination_name': destinationName,
+      'destination_address': destinationAddress,
+      'destination_place_id': destinationPlaceId,
+      'destination_location': _geographyPoint(
+        latitude: destinationLatitude,
+        longitude: destinationLongitude,
+      ),
+
       'budget_total': budgetTotal,
       'currency': 'VND',
     });
@@ -82,24 +116,60 @@ class TripRepository {
     String? vehicleId,
     DateTime? plannedStartAt,
     DateTime? plannedEndAt,
-    String? startName,
-    String? destinationName,
     double? budgetTotal,
+
+    bool updateStartPlace = false,
+    String? startName,
+    String? startAddress,
+    String? startPlaceId,
+    double? startLatitude,
+    double? startLongitude,
+
+    bool updateDestinationPlace = false,
+    String? destinationName,
+    String? destinationAddress,
+    String? destinationPlaceId,
+    double? destinationLatitude,
+    double? destinationLongitude,
   }) async {
     final userId = _currentUserId();
 
+    final updates = <String, dynamic>{
+      'vehicle_id': vehicleId,
+      'name': name,
+      'description': description,
+      'planned_start_at': plannedStartAt?.toUtc().toIso8601String(),
+      'planned_end_at': plannedEndAt?.toUtc().toIso8601String(),
+      'budget_total': budgetTotal,
+    };
+
+    if (updateStartPlace) {
+      updates.addAll({
+        'start_name': startName,
+        'start_address': startAddress,
+        'start_place_id': startPlaceId,
+        'start_location': _geographyPoint(
+          latitude: startLatitude,
+          longitude: startLongitude,
+        ),
+      });
+    }
+
+    if (updateDestinationPlace) {
+      updates.addAll({
+        'destination_name': destinationName,
+        'destination_address': destinationAddress,
+        'destination_place_id': destinationPlaceId,
+        'destination_location': _geographyPoint(
+          latitude: destinationLatitude,
+          longitude: destinationLongitude,
+        ),
+      });
+    }
+
     await _client
         .from('trips')
-        .update({
-          'vehicle_id': vehicleId,
-          'name': name,
-          'description': description,
-          'planned_start_at': plannedStartAt?.toUtc().toIso8601String(),
-          'planned_end_at': plannedEndAt?.toUtc().toIso8601String(),
-          'start_name': startName,
-          'destination_name': destinationName,
-          'budget_total': budgetTotal,
-        })
+        .update(updates)
         .eq('id', tripId)
         .eq('owner_id', userId);
   }

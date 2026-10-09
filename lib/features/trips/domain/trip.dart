@@ -2,23 +2,25 @@ class Trip {
   const Trip({
     required this.id,
     required this.ownerId,
-    required this.vehicleId,
     required this.name,
-    required this.description,
     required this.status,
-    required this.plannedStartAt,
-    required this.plannedEndAt,
-    required this.startName,
-    required this.startAddress,
-    required this.destinationName,
-    required this.destinationAddress,
-    required this.routeDistanceM,
-    required this.routeDurationS,
-    required this.estimatedFuelL,
-    required this.estimatedMinCost,
-    required this.budgetTotal,
     required this.currency,
     required this.offlineReady,
+    this.vehicleId,
+    this.description,
+    this.plannedStartAt,
+    this.plannedEndAt,
+    this.startName,
+    this.startAddress,
+    this.startPlaceId,
+    this.destinationName,
+    this.destinationAddress,
+    this.destinationPlaceId,
+    this.routeDistanceM,
+    this.routeDurationS,
+    this.estimatedFuelL,
+    this.estimatedMinCost,
+    this.budgetTotal,
   });
 
   final String id;
@@ -34,11 +36,13 @@ class Trip {
 
   final String? startName;
   final String? startAddress;
+  final String? startPlaceId;
 
   final String? destinationName;
   final String? destinationAddress;
+  final String? destinationPlaceId;
 
-  final double? routeDistanceM;
+  final int? routeDistanceM;
   final int? routeDurationS;
 
   final double? estimatedFuelL;
@@ -46,34 +50,67 @@ class Trip {
   final double? budgetTotal;
 
   final String currency;
-
   final bool offlineReady;
 
   factory Trip.fromMap(Map<String, dynamic> map) {
     return Trip(
-      id: map['id'] as String,
-      ownerId: map['owner_id'] as String,
-      vehicleId: map['vehicle_id'] as String?,
-      name: map['name'] as String,
-      description: map['description'] as String?,
-      status: map['status'] as String? ?? 'draft',
-      plannedStartAt: map['planned_start_at'] == null
-          ? null
-          : DateTime.parse(map['planned_start_at'] as String),
-      plannedEndAt: map['planned_end_at'] == null
-          ? null
-          : DateTime.parse(map['planned_end_at'] as String),
-      startName: map['start_name'] as String?,
-      startAddress: map['start_address'] as String?,
-      destinationName: map['destination_name'] as String?,
-      destinationAddress: map['destination_address'] as String?,
-      routeDistanceM: (map['route_distance_m'] as num?)?.toDouble(),
-      routeDurationS: (map['route_duration_s'] as num?)?.toInt(),
-      estimatedFuelL: (map['estimated_fuel_l'] as num?)?.toDouble(),
-      estimatedMinCost: (map['estimated_min_cost'] as num?)?.toDouble(),
-      budgetTotal: (map['budget_total'] as num?)?.toDouble(),
-      currency: map['currency'] as String? ?? 'VND',
-      offlineReady: map['offline_ready'] as bool? ?? false,
+      id: map['id'].toString(),
+      ownerId: map['owner_id'].toString(),
+      vehicleId: map['vehicle_id']?.toString(),
+      name: map['name']?.toString() ?? '',
+      description: map['description']?.toString(),
+      status: map['status']?.toString() ?? 'draft',
+      plannedStartAt: _parseDateTime(map['planned_start_at']),
+      plannedEndAt: _parseDateTime(map['planned_end_at']),
+      startName: map['start_name']?.toString(),
+      startAddress: map['start_address']?.toString(),
+      startPlaceId: map['start_place_id']?.toString(),
+      destinationName: map['destination_name']?.toString(),
+      destinationAddress: map['destination_address']?.toString(),
+      destinationPlaceId: map['destination_place_id']?.toString(),
+      routeDistanceM: _parseInt(map['route_distance_m']),
+      routeDurationS: _parseInt(map['route_duration_s']),
+      estimatedFuelL: _parseDouble(map['estimated_fuel_l']),
+      estimatedMinCost: _parseDouble(map['estimated_min_cost']),
+      budgetTotal: _parseDouble(map['budget_total']),
+      currency: map['currency']?.toString() ?? 'VND',
+      offlineReady: map['offline_ready'] == true,
     );
+  }
+
+  static DateTime? _parseDateTime(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+
+    return DateTime.tryParse(value.toString());
+  }
+
+  static int? _parseInt(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is int) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.toInt();
+    }
+
+    return int.tryParse(value.toString());
+  }
+
+  static double? _parseDouble(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    return double.tryParse(value.toString());
   }
 }

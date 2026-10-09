@@ -27,7 +27,7 @@ class _MapPageState extends State<MapPage> {
   String? _locationMessage;
 
   Future<void> _searchPlace() async {
-    final result = await context.push<PlaceResult>('/map/search');
+    final result = await context.push<PlaceResult>('/place-search');
 
     if (result == null || !mounted) {
       return;

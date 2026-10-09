@@ -59,6 +59,15 @@ GoRouter createAppRouter({
         },
       ),
 
+      // Dùng chung cho Map và Trip.
+      GoRoute(
+        path: '/place-search',
+        name: 'place-search',
+        builder: (context, state) {
+          return const PlaceSearchPage();
+        },
+      ),
+
       StatefulShellRoute.indexedStack(
         builder:
             (
@@ -131,15 +140,6 @@ GoRouter createAppRouter({
                 builder: (context, state) {
                   return const MapPage();
                 },
-                routes: [
-                  GoRoute(
-                    path: 'search',
-                    name: 'place-search',
-                    builder: (context, state) {
-                      return const PlaceSearchPage();
-                    },
-                  ),
-                ],
               ),
             ],
           ),
