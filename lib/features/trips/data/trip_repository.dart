@@ -167,6 +167,17 @@ class TripRepository {
       });
     }
 
+    // Nếu thay đổi đầu hoặc cuối tuyến thì kết quả
+    // routing/nhiên liệu cũ không còn giá trị.
+    if (updateStartPlace || updateDestinationPlace) {
+      updates.addAll({
+        'route_distance_m': null,
+        'route_duration_s': null,
+        'estimated_fuel_l': null,
+        'estimated_min_cost': null,
+      });
+    }
+
     await _client
         .from('trips')
         .update(updates)
@@ -195,6 +206,19 @@ class TripRepository {
     await _client
         .from('trips')
         .update({'status': status})
+        .eq('id', tripId)
+        .eq('owner_id', userId);
+  }
+
+  Future<void> updateEstimatedFuel({
+    required String tripId,
+    required double? estimatedFuelL,
+  }) async {
+    final userId = _currentUserId();
+
+    await _client
+        .from('trips')
+        .update({'estimated_fuel_l': estimatedFuelL})
         .eq('id', tripId)
         .eq('owner_id', userId);
   }

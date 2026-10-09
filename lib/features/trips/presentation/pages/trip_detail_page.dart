@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../vehicle/data/vehicle_providers.dart';
+import '../../../vehicle/domain/vehicle.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../domain/trip.dart';
@@ -89,6 +90,28 @@ class TripDetailPage extends ConsumerWidget {
     }
 
     return '$hours giờ $minutes phút';
+  }
+
+  String _formatFuel(double? liters) {
+    if (liters == null) {
+      return 'Chưa tính';
+    }
+
+    return '${liters.toStringAsFixed(1)} lít';
+  }
+
+  String _tankEquivalent(Trip trip, Vehicle? vehicle) {
+    final fuel = trip.estimatedFuelL;
+
+    final tank = vehicle?.fuelTankCapacityL;
+
+    if (fuel == null || tank == null || tank <= 0) {
+      return 'Chưa tính';
+    }
+
+    final value = fuel / tank;
+
+    return '${value.toStringAsFixed(2)} bình';
   }
 
   Future<void> _editTrip(BuildContext context, WidgetRef ref) async {
@@ -267,10 +290,7 @@ class TripDetailPage extends ConsumerWidget {
                   children: [
                     const Icon(Icons.error_outline, size: 48),
                     const SizedBox(height: 16),
-                    const Text(
-                      'Không thể tải '
-                      'chuyến đi.',
-                    ),
+                    const Text('Không thể tải chuyến đi.'),
                     const SizedBox(height: 16),
                     FilledButton(
                       onPressed: () {
@@ -286,30 +306,34 @@ class TripDetailPage extends ConsumerWidget {
           data: (trip) {
             final vehiclesAsync = ref.watch(currentVehiclesProvider);
 
-            final vehicleName = vehiclesAsync.maybeWhen(
+            final selectedVehicle = vehiclesAsync.maybeWhen<Vehicle?>(
               data: (vehicles) {
                 if (trip.vehicleId == null) {
-                  return 'Chưa chọn';
+                  return null;
                 }
 
                 for (final vehicle in vehicles) {
                   if (vehicle.id == trip.vehicleId) {
-                    return vehicle.name;
+                    return vehicle;
                   }
                 }
 
-                return 'Không xác định';
+                return null;
               },
-              orElse: () {
-                return trip.vehicleId == null ? 'Chưa chọn' : 'Đang tải...';
-              },
+              orElse: () => null,
             );
+
+            final vehicleName =
+                selectedVehicle?.name ??
+                (trip.vehicleId == null ? 'Chưa chọn' : 'Đang tải...');
 
             final canViewRoute =
                 trip.startPlaceId != null &&
                 trip.startPlaceId!.trim().isNotEmpty &&
                 trip.destinationPlaceId != null &&
                 trip.destinationPlaceId!.trim().isNotEmpty;
+
+            final isElectric = selectedVehicle?.fuelType == 'electric';
 
             return ListView(
               padding: const EdgeInsets.all(16),
@@ -398,11 +422,40 @@ class TripDetailPage extends ConsumerWidget {
                         title: const Text('Khoảng cách tuyến'),
                         subtitle: Text(_formatDistance(trip.routeDistanceM)),
                       ),
+
                       ListTile(
                         leading: const Icon(Icons.schedule),
                         title: const Text('Thời gian di chuyển'),
                         subtitle: Text(_formatDuration(trip.routeDurationS)),
                       ),
+
+                      ListTile(
+                        leading: Icon(
+                          isElectric
+                              ? Icons.electric_bolt_outlined
+                              : Icons.local_gas_station_outlined,
+                        ),
+                        title: Text(
+                          isElectric
+                              ? 'Năng lượng dự kiến'
+                              : 'Nhiên liệu dự kiến',
+                        ),
+                        subtitle: Text(
+                          isElectric
+                              ? 'Chưa hỗ trợ tính '
+                                    'kWh/100 km'
+                              : _formatFuel(trip.estimatedFuelL),
+                        ),
+                      ),
+
+                      if (!isElectric && trip.estimatedFuelL != null)
+                        ListTile(
+                          leading: const Icon(Icons.gas_meter_outlined),
+                          title: const Text('Số bình tương đương'),
+                          subtitle: Text(
+                            _tankEquivalent(trip, selectedVehicle),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -415,29 +468,7 @@ class TripDetailPage extends ConsumerWidget {
                       _viewRoute(context, ref);
                     },
                     icon: const Icon(Icons.route),
-                    label: const Text('Xem tuyến đường'),
-                  ),
-
-                  const SizedBox(height: 12),
-                ] else ...[
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.info_outline),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Text(
-                              'Hãy chọn lại '
-                              'điểm bắt đầu và '
-                              'điểm đến trên bản đồ '
-                              'để tính tuyến.',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    label: const Text('Xem / tính lại tuyến đường'),
                   ),
 
                   const SizedBox(height: 12),

@@ -5,8 +5,12 @@ import 'package:latlong2/latlong.dart';
 
 import '../../../map/data/route_providers.dart';
 import '../../../map/domain/route_result.dart';
+import '../../../vehicle/data/vehicle_repository.dart';
 import '../../data/trip_providers.dart';
+import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
+import '../../domain/trip.dart';
+import '../../domain/trip_fuel_estimator.dart';
 import '../../domain/trip_route_points.dart';
 
 class TripRoutePage extends ConsumerStatefulWidget {
@@ -24,6 +28,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   TripRoutePoints? _routePoints;
   RouteResult? _route;
 
+  double? _estimatedFuelLiters;
+  double? _tankEquivalent;
+  String? _fuelEstimateMessage;
+
   bool _isLoading = true;
   String? _errorMessage;
 
@@ -39,6 +47,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       setState(() {
         _isLoading = true;
         _errorMessage = null;
+
+        _estimatedFuelLiters = null;
+        _tankEquivalent = null;
+        _fuelEstimateMessage = null;
       });
     }
 
@@ -61,6 +73,8 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         distanceMeters: route.distanceMeters,
         durationSeconds: route.durationSeconds,
       );
+
+      await _calculateFuelEstimate(route);
 
       if (!mounted) {
         return;
@@ -93,6 +107,110 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     }
   }
 
+  Future<void> _calculateFuelEstimate(RouteResult route) async {
+    try {
+      final tripRepository = ref.read(tripRepositoryProvider);
+
+      final trip = await tripRepository.getTripById(widget.tripId);
+
+      if (trip.vehicleId == null) {
+        await tripRepository.updateEstimatedFuel(
+          tripId: widget.tripId,
+          estimatedFuelL: null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _fuelEstimateMessage = 'Chuyến đi chưa chọn phương tiện.';
+          });
+        }
+
+        return;
+      }
+
+      final vehicle = await ref
+          .read(vehicleRepositoryProvider)
+          .getVehicleById(trip.vehicleId!);
+
+      if (vehicle.fuelType == 'electric') {
+        await tripRepository.updateEstimatedFuel(
+          tripId: widget.tripId,
+          estimatedFuelL: null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _fuelEstimateMessage =
+                'Xe điện: hiện chưa có dữ liệu '
+                'tiêu thụ kWh/100 km để tính '
+                'năng lượng hành trình.';
+          });
+        }
+
+        return;
+      }
+
+      if (vehicle.consumptionLPer100Km == null ||
+          vehicle.consumptionLPer100Km! <= 0) {
+        await tripRepository.updateEstimatedFuel(
+          tripId: widget.tripId,
+          estimatedFuelL: null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _fuelEstimateMessage =
+                'Phương tiện chưa có mức tiêu '
+                'hao nhiên liệu (lít/100 km).';
+          });
+        }
+
+        return;
+      }
+
+      const estimator = TripFuelEstimator();
+
+      final estimate = estimator.calculate(
+        distanceMeters: route.distanceMeters,
+        vehicle: vehicle,
+      );
+
+      if (estimate == null) {
+        await tripRepository.updateEstimatedFuel(
+          tripId: widget.tripId,
+          estimatedFuelL: null,
+        );
+
+        return;
+      }
+
+      await tripRepository.updateEstimatedFuel(
+        tripId: widget.tripId,
+        estimatedFuelL: estimate.liters,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _estimatedFuelLiters = estimate.liters;
+
+        _tankEquivalent = estimate.tankEquivalent;
+      });
+    } catch (_) {
+      // Không để lỗi ước tính nhiên liệu
+      // làm hỏng chức năng routing.
+      if (mounted) {
+        setState(() {
+          _fuelEstimateMessage =
+              'Đã tính được tuyến đường nhưng '
+              'chưa thể ước tính nhiên liệu.';
+        });
+      }
+    }
+  }
+
   void _fitRoute() {
     final route = _route;
 
@@ -107,7 +225,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     _mapController.fitCamera(
       CameraFit.coordinates(
         coordinates: coordinates,
-        padding: const EdgeInsets.fromLTRB(36, 100, 36, 220),
+        padding: const EdgeInsets.fromLTRB(36, 100, 36, 260),
         maxZoom: 16,
       ),
     );
@@ -118,9 +236,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       return '$meters m';
     }
 
-    final kilometers = meters / 1000;
-
-    return '${kilometers.toStringAsFixed(1)} km';
+    return '${(meters / 1000).toStringAsFixed(1)} km';
   }
 
   String _formatDuration(int seconds) {
@@ -141,9 +257,18 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     return '$hours giờ $minutes phút';
   }
 
+  String _formatFuel(double liters) {
+    return '${liters.toStringAsFixed(1)} lít';
+  }
+
+  String _formatTankEquivalent(double value) {
+    return '${value.toStringAsFixed(2)} bình';
+  }
+
   @override
   void dispose() {
     _mapController.dispose();
+
     super.dispose();
   }
 
@@ -172,7 +297,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     );
   }
 
-  Widget _buildBody(BuildContext context, AsyncValue tripAsync) {
+  Widget _buildBody(BuildContext context, AsyncValue<Trip> tripAsync) {
     if (_isLoading) {
       return const Center(
         child: Column(
@@ -331,7 +456,9 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                           value: _formatDistance(route.distanceMeters),
                         ),
                       ),
+
                       const SizedBox(width: 12),
+
                       Expanded(
                         child: _SummaryItem(
                           icon: Icons.schedule,
@@ -342,12 +469,49 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                     ],
                   ),
 
+                  const SizedBox(height: 14),
+
+                  if (_estimatedFuelLiters != null)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _SummaryItem(
+                            icon: Icons.local_gas_station_outlined,
+                            label: 'Nhiên liệu',
+                            value: _formatFuel(_estimatedFuelLiters!),
+                          ),
+                        ),
+
+                        const SizedBox(width: 12),
+
+                        Expanded(
+                          child: _SummaryItem(
+                            icon: Icons.gas_meter_outlined,
+                            label: 'Tương đương',
+                            value: _tankEquivalent == null
+                                ? 'Chưa có dung tích bình'
+                                : _formatTankEquivalent(_tankEquivalent!),
+                          ),
+                        ),
+                      ],
+                    )
+                  else if (_fuelEstimateMessage != null)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.info_outline, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(_fuelEstimateMessage!)),
+                      ],
+                    ),
+
                   const SizedBox(height: 12),
 
                   Text(
-                    'Thời gian là ước tính theo '
-                    'tuyến đường, chưa bao gồm '
-                    'giao thông thời gian thực.',
+                    'Khoảng cách và thời gian '
+                    'được ước tính theo tuyến. '
+                    'Chưa bao gồm giao thông '
+                    'thời gian thực.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
