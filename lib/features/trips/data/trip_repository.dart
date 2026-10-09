@@ -134,6 +134,17 @@ class TripRepository {
   }) async {
     final userId = _currentUserId();
 
+    final currentData = await _client
+        .from('trips')
+        .select('vehicle_id')
+        .eq('id', tripId)
+        .eq('owner_id', userId)
+        .single();
+
+    final currentVehicleId = currentData['vehicle_id']?.toString();
+
+    final vehicleChanged = currentVehicleId != vehicleId;
+
     final updates = <String, dynamic>{
       'vehicle_id': vehicleId,
       'name': name,
@@ -167,8 +178,8 @@ class TripRepository {
       });
     }
 
-    // Nếu thay đổi đầu hoặc cuối tuyến thì kết quả
-    // routing/nhiên liệu cũ không còn giá trị.
+    // Thay đổi điểm đi/đến:
+    // tuyến cũ và các ước tính cũ không còn hợp lệ.
     if (updateStartPlace || updateDestinationPlace) {
       updates.addAll({
         'route_distance_m': null,
@@ -176,6 +187,11 @@ class TripRepository {
         'estimated_fuel_l': null,
         'estimated_min_cost': null,
       });
+    } else if (vehicleChanged) {
+      // Chỉ thay đổi phương tiện:
+      // tuyến vẫn giữ nguyên nhưng nhiên liệu/chi phí
+      // phải được tính lại.
+      updates.addAll({'estimated_fuel_l': null, 'estimated_min_cost': null});
     }
 
     await _client
@@ -210,15 +226,19 @@ class TripRepository {
         .eq('owner_id', userId);
   }
 
-  Future<void> updateEstimatedFuel({
+  Future<void> updateTripEstimates({
     required String tripId,
     required double? estimatedFuelL,
+    required double? estimatedMinCost,
   }) async {
     final userId = _currentUserId();
 
     await _client
         .from('trips')
-        .update({'estimated_fuel_l': estimatedFuelL})
+        .update({
+          'estimated_fuel_l': estimatedFuelL,
+          'estimated_min_cost': estimatedMinCost,
+        })
         .eq('id', tripId)
         .eq('owner_id', userId);
   }

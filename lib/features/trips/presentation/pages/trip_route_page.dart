@@ -6,10 +6,12 @@ import 'package:latlong2/latlong.dart';
 import '../../../map/data/route_providers.dart';
 import '../../../map/domain/route_result.dart';
 import '../../../vehicle/data/vehicle_repository.dart';
+import '../../data/fuel_price_repository.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
 import '../../domain/trip.dart';
+import '../../domain/trip_cost_estimator.dart';
 import '../../domain/trip_fuel_estimator.dart';
 import '../../domain/trip_route_points.dart';
 
@@ -30,7 +32,15 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
   double? _estimatedFuelLiters;
   double? _tankEquivalent;
-  String? _fuelEstimateMessage;
+
+  double? _unitFuelPrice;
+  double? _estimatedFuelCost;
+  double? _remainingBudget;
+  double? _budgetUsagePercent;
+
+  bool _exceedsBudget = false;
+
+  String? _estimateMessage;
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -50,7 +60,14 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         _estimatedFuelLiters = null;
         _tankEquivalent = null;
-        _fuelEstimateMessage = null;
+
+        _unitFuelPrice = null;
+        _estimatedFuelCost = null;
+        _remainingBudget = null;
+        _budgetUsagePercent = null;
+
+        _exceedsBudget = false;
+        _estimateMessage = null;
       });
     }
 
@@ -74,7 +91,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         durationSeconds: route.durationSeconds,
       );
 
-      await _calculateFuelEstimate(route);
+      await _calculateFuelAndCost(route);
 
       if (!mounted) {
         return;
@@ -107,21 +124,22 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     }
   }
 
-  Future<void> _calculateFuelEstimate(RouteResult route) async {
-    try {
-      final tripRepository = ref.read(tripRepositoryProvider);
+  Future<void> _calculateFuelAndCost(RouteResult route) async {
+    final tripRepository = ref.read(tripRepositoryProvider);
 
+    try {
       final trip = await tripRepository.getTripById(widget.tripId);
 
       if (trip.vehicleId == null) {
-        await tripRepository.updateEstimatedFuel(
+        await tripRepository.updateTripEstimates(
           tripId: widget.tripId,
           estimatedFuelL: null,
+          estimatedMinCost: null,
         );
 
         if (mounted) {
           setState(() {
-            _fuelEstimateMessage = 'Chuyến đi chưa chọn phương tiện.';
+            _estimateMessage = 'Chuyến đi chưa chọn phương tiện.';
           });
         }
 
@@ -133,60 +151,122 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
           .getVehicleById(trip.vehicleId!);
 
       if (vehicle.fuelType == 'electric') {
-        await tripRepository.updateEstimatedFuel(
+        await tripRepository.updateTripEstimates(
           tripId: widget.tripId,
           estimatedFuelL: null,
+          estimatedMinCost: null,
         );
 
         if (mounted) {
           setState(() {
-            _fuelEstimateMessage =
-                'Xe điện: hiện chưa có dữ liệu '
+            _estimateMessage =
+                'Xe điện hiện chưa có dữ liệu '
                 'tiêu thụ kWh/100 km để tính '
-                'năng lượng hành trình.';
+                'năng lượng và chi phí.';
           });
         }
 
         return;
       }
 
-      if (vehicle.consumptionLPer100Km == null ||
-          vehicle.consumptionLPer100Km! <= 0) {
-        await tripRepository.updateEstimatedFuel(
-          tripId: widget.tripId,
-          estimatedFuelL: null,
-        );
+      const fuelEstimator = TripFuelEstimator();
 
-        if (mounted) {
-          setState(() {
-            _fuelEstimateMessage =
-                'Phương tiện chưa có mức tiêu '
-                'hao nhiên liệu (lít/100 km).';
-          });
-        }
-
-        return;
-      }
-
-      const estimator = TripFuelEstimator();
-
-      final estimate = estimator.calculate(
+      final fuelEstimate = fuelEstimator.calculate(
         distanceMeters: route.distanceMeters,
         vehicle: vehicle,
       );
 
-      if (estimate == null) {
-        await tripRepository.updateEstimatedFuel(
+      if (fuelEstimate == null) {
+        await tripRepository.updateTripEstimates(
           tripId: widget.tripId,
           estimatedFuelL: null,
+          estimatedMinCost: null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _estimateMessage =
+                'Phương tiện chưa có mức tiêu hao '
+                'nhiên liệu hợp lệ.';
+          });
+        }
+
+        return;
+      }
+
+      final fuelType = vehicle.fuelType;
+
+      if (fuelType == null || fuelType.trim().isEmpty) {
+        await tripRepository.updateTripEstimates(
+          tripId: widget.tripId,
+          estimatedFuelL: fuelEstimate.liters,
+          estimatedMinCost: null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _estimatedFuelLiters = fuelEstimate.liters;
+
+            _tankEquivalent = fuelEstimate.tankEquivalent;
+
+            _estimateMessage =
+                'Đã tính nhiên liệu nhưng phương '
+                'tiện chưa khai báo loại nhiên liệu.';
+          });
+        }
+
+        return;
+      }
+
+      final fuelPrice = await ref
+          .read(fuelPriceRepositoryProvider)
+          .getLatestPrice(fuelType);
+
+      if (fuelPrice == null) {
+        await tripRepository.updateTripEstimates(
+          tripId: widget.tripId,
+          estimatedFuelL: fuelEstimate.liters,
+          estimatedMinCost: null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _estimatedFuelLiters = fuelEstimate.liters;
+
+            _tankEquivalent = fuelEstimate.tankEquivalent;
+
+            _estimateMessage =
+                'Đã tính nhiên liệu nhưng chưa có '
+                'giá cấu hình cho loại nhiên liệu '
+                '"$fuelType".';
+          });
+        }
+
+        return;
+      }
+
+      const costEstimator = TripCostEstimator();
+
+      final costEstimate = costEstimator.calculate(
+        estimatedFuelLiters: fuelEstimate.liters,
+        unitPriceVndPerLiter: fuelPrice.unitPriceVndPerLiter,
+        budget: trip.budgetTotal,
+      );
+
+      if (costEstimate == null) {
+        await tripRepository.updateTripEstimates(
+          tripId: widget.tripId,
+          estimatedFuelL: fuelEstimate.liters,
+          estimatedMinCost: null,
         );
 
         return;
       }
 
-      await tripRepository.updateEstimatedFuel(
+      await tripRepository.updateTripEstimates(
         tripId: widget.tripId,
-        estimatedFuelL: estimate.liters,
+        estimatedFuelL: fuelEstimate.liters,
+        estimatedMinCost: costEstimate.fuelCost,
       );
 
       if (!mounted) {
@@ -194,18 +274,26 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       }
 
       setState(() {
-        _estimatedFuelLiters = estimate.liters;
+        _estimatedFuelLiters = fuelEstimate.liters;
 
-        _tankEquivalent = estimate.tankEquivalent;
+        _tankEquivalent = fuelEstimate.tankEquivalent;
+
+        _unitFuelPrice = costEstimate.unitPrice;
+
+        _estimatedFuelCost = costEstimate.fuelCost;
+
+        _remainingBudget = costEstimate.remainingBudget;
+
+        _budgetUsagePercent = costEstimate.budgetUsagePercent;
+
+        _exceedsBudget = costEstimate.exceedsBudget;
       });
     } catch (_) {
-      // Không để lỗi ước tính nhiên liệu
-      // làm hỏng chức năng routing.
       if (mounted) {
         setState(() {
-          _fuelEstimateMessage =
+          _estimateMessage =
               'Đã tính được tuyến đường nhưng '
-              'chưa thể ước tính nhiên liệu.';
+              'chưa thể hoàn tất ước tính chi phí.';
         });
       }
     }
@@ -225,7 +313,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     _mapController.fitCamera(
       CameraFit.coordinates(
         coordinates: coordinates,
-        padding: const EdgeInsets.fromLTRB(36, 100, 36, 260),
+        padding: const EdgeInsets.fromLTRB(36, 100, 36, 330),
         maxZoom: 16,
       ),
     );
@@ -263,6 +351,25 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
   String _formatTankEquivalent(double value) {
     return '${value.toStringAsFixed(2)} bình';
+  }
+
+  String _formatVnd(double value) {
+    final negative = value < 0;
+
+    final digits = value.abs().round().toString();
+
+    final buffer = StringBuffer();
+
+    for (var i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 == 0) {
+        buffer.write('.');
+      }
+
+      buffer.write(digits[i]);
+    }
+
+    return '${negative ? '-' : ''}'
+        '${buffer.toString()} VND';
   }
 
   @override
@@ -427,94 +534,126 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         ),
 
         Positioned(
-          left: 16,
-          right: 16,
-          bottom: 16,
+          left: 12,
+          right: 12,
+          bottom: 12,
           child: Card(
             elevation: 4,
             child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    tripTitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
+              padding: const EdgeInsets.all(14),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tripTitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
 
-                  const SizedBox(height: 14),
+                    const SizedBox(height: 12),
 
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _SummaryItem(
-                          icon: Icons.straighten,
-                          label: 'Khoảng cách',
-                          value: _formatDistance(route.distanceMeters),
-                        ),
-                      ),
-
-                      const SizedBox(width: 12),
-
-                      Expanded(
-                        child: _SummaryItem(
-                          icon: Icons.schedule,
-                          label: 'Thời gian',
-                          value: _formatDuration(route.durationSeconds),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  if (_estimatedFuelLiters != null)
                     Row(
                       children: [
                         Expanded(
                           child: _SummaryItem(
-                            icon: Icons.local_gas_station_outlined,
-                            label: 'Nhiên liệu',
-                            value: _formatFuel(_estimatedFuelLiters!),
+                            icon: Icons.straighten,
+                            label: 'Khoảng cách',
+                            value: _formatDistance(route.distanceMeters),
                           ),
                         ),
-
-                        const SizedBox(width: 12),
-
-                        Expanded(
-                          child: _SummaryItem(
-                            icon: Icons.gas_meter_outlined,
-                            label: 'Tương đương',
-                            value: _tankEquivalent == null
-                                ? 'Chưa có dung tích bình'
-                                : _formatTankEquivalent(_tankEquivalent!),
-                          ),
-                        ),
-                      ],
-                    )
-                  else if (_fuelEstimateMessage != null)
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.info_outline, size: 20),
                         const SizedBox(width: 8),
-                        Expanded(child: Text(_fuelEstimateMessage!)),
+                        Expanded(
+                          child: _SummaryItem(
+                            icon: Icons.schedule,
+                            label: 'Thời gian',
+                            value: _formatDuration(route.durationSeconds),
+                          ),
+                        ),
                       ],
                     ),
 
-                  const SizedBox(height: 12),
+                    if (_estimatedFuelLiters != null) ...[
+                      const SizedBox(height: 12),
 
-                  Text(
-                    'Khoảng cách và thời gian '
-                    'được ước tính theo tuyến. '
-                    'Chưa bao gồm giao thông '
-                    'thời gian thực.',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _SummaryItem(
+                              icon: Icons.local_gas_station_outlined,
+                              label: 'Nhiên liệu',
+                              value: _formatFuel(_estimatedFuelLiters!),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _SummaryItem(
+                              icon: Icons.gas_meter_outlined,
+                              label: 'Tương đương',
+                              value: _tankEquivalent == null
+                                  ? 'Chưa có dung tích bình'
+                                  : _formatTankEquivalent(_tankEquivalent!),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+
+                    if (_estimatedFuelCost != null) ...[
+                      const Divider(height: 24),
+
+                      _SummaryLine(
+                        label: 'Đơn giá nhiên liệu',
+                        value: '${_formatVnd(_unitFuelPrice!)}/lít',
+                      ),
+
+                      _SummaryLine(
+                        label: 'Chi phí nhiên liệu',
+                        value: _formatVnd(_estimatedFuelCost!),
+                      ),
+
+                      if (_remainingBudget != null)
+                        _SummaryLine(
+                          label: _exceedsBudget
+                              ? 'Vượt ngân sách'
+                              : 'Ngân sách còn lại',
+                          value: _formatVnd(_remainingBudget!),
+                          emphasis: _exceedsBudget,
+                        ),
+
+                      if (_budgetUsagePercent != null)
+                        _SummaryLine(
+                          label: 'Tỷ lệ ngân sách',
+                          value: '${_budgetUsagePercent!.toStringAsFixed(1)}%',
+                          emphasis: _exceedsBudget,
+                        ),
+                    ],
+
+                    if (_estimateMessage != null) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.info_outline, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(_estimateMessage!)),
+                        ],
+                      ),
+                    ],
+
+                    const SizedBox(height: 10),
+
+                    Text(
+                      'Khoảng cách và thời gian '
+                      'được ước tính theo tuyến; '
+                      'chưa bao gồm giao thông '
+                      'thời gian thực.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -592,6 +731,37 @@ class _SummaryItem extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SummaryLine extends StatelessWidget {
+  const _SummaryLine({
+    required this.label,
+    required this.value,
+    this.emphasis = false,
+  });
+
+  final String label;
+  final String value;
+  final bool emphasis;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = emphasis ? Theme.of(context).colorScheme.error : null;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(child: Text(label)),
+          const SizedBox(width: 12),
+          Text(
+            value,
+            style: TextStyle(fontWeight: FontWeight.w600, color: color),
+          ),
+        ],
+      ),
     );
   }
 }

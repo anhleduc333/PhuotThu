@@ -49,15 +49,6 @@ class TripDetailPage extends ConsumerWidget {
         '$hour:$minute';
   }
 
-  String _formatBudget(Trip trip) {
-    if (trip.budgetTotal == null) {
-      return 'Chưa đặt';
-    }
-
-    return '${trip.budgetTotal!.toStringAsFixed(0)} '
-        '${trip.currency}';
-  }
-
   String _formatDistance(int? meters) {
     if (meters == null) {
       return 'Chưa tính';
@@ -100,6 +91,29 @@ class TripDetailPage extends ConsumerWidget {
     return '${liters.toStringAsFixed(1)} lít';
   }
 
+  String _formatVnd(double? value) {
+    if (value == null) {
+      return 'Chưa tính';
+    }
+
+    final negative = value < 0;
+
+    final digits = value.abs().round().toString();
+
+    final buffer = StringBuffer();
+
+    for (var i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 == 0) {
+        buffer.write('.');
+      }
+
+      buffer.write(digits[i]);
+    }
+
+    return '${negative ? '-' : ''}'
+        '${buffer.toString()} VND';
+  }
+
   String _tankEquivalent(Trip trip, Vehicle? vehicle) {
     final fuel = trip.estimatedFuelL;
 
@@ -109,9 +123,19 @@ class TripDetailPage extends ConsumerWidget {
       return 'Chưa tính';
     }
 
-    final value = fuel / tank;
+    return '${(fuel / tank).toStringAsFixed(2)} bình';
+  }
 
-    return '${value.toStringAsFixed(2)} bình';
+  String _derivedUnitPrice(Trip trip) {
+    final fuel = trip.estimatedFuelL;
+
+    final cost = trip.estimatedMinCost;
+
+    if (fuel == null || fuel <= 0 || cost == null) {
+      return 'Chưa tính';
+    }
+
+    return '${_formatVnd(cost / fuel)}/lít';
   }
 
   Future<void> _editTrip(BuildContext context, WidgetRef ref) async {
@@ -260,12 +284,7 @@ class TripDetailPage extends ConsumerWidget {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Không thể xóa '
-            'chuyến đi: $error',
-          ),
-        ),
+        SnackBar(content: Text('Không thể xóa chuyến đi: $error')),
       );
     }
   }
@@ -334,6 +353,21 @@ class TripDetailPage extends ConsumerWidget {
                 trip.destinationPlaceId!.trim().isNotEmpty;
 
             final isElectric = selectedVehicle?.fuelType == 'electric';
+
+            final remainingBudget =
+                trip.budgetTotal != null && trip.estimatedMinCost != null
+                ? trip.budgetTotal! - trip.estimatedMinCost!
+                : null;
+
+            final budgetUsagePercent =
+                trip.budgetTotal != null &&
+                    trip.budgetTotal! > 0 &&
+                    trip.estimatedMinCost != null
+                ? trip.estimatedMinCost! / trip.budgetTotal! * 100
+                : null;
+
+            final exceedsBudget =
+                remainingBudget != null && remainingBudget < 0;
 
             return ListView(
               padding: const EdgeInsets.all(16),
@@ -406,7 +440,7 @@ class TripDetailPage extends ConsumerWidget {
                           Icons.account_balance_wallet_outlined,
                         ),
                         title: const Text('Ngân sách'),
-                        subtitle: Text(_formatBudget(trip)),
+                        subtitle: Text(_formatVnd(trip.budgetTotal)),
                       ),
                     ],
                   ),
@@ -442,8 +476,7 @@ class TripDetailPage extends ConsumerWidget {
                         ),
                         subtitle: Text(
                           isElectric
-                              ? 'Chưa hỗ trợ tính '
-                                    'kWh/100 km'
+                              ? 'Chưa hỗ trợ tính kWh/100 km'
                               : _formatFuel(trip.estimatedFuelL),
                         ),
                       ),
@@ -454,6 +487,58 @@ class TripDetailPage extends ConsumerWidget {
                           title: const Text('Số bình tương đương'),
                           subtitle: Text(
                             _tankEquivalent(trip, selectedVehicle),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                Card(
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.payments_outlined),
+                        title: const Text('Đơn giá nhiên liệu'),
+                        subtitle: Text(_derivedUnitPrice(trip)),
+                      ),
+
+                      ListTile(
+                        leading: const Icon(Icons.receipt_long_outlined),
+                        title: const Text('Chi phí nhiên liệu'),
+                        subtitle: Text(_formatVnd(trip.estimatedMinCost)),
+                      ),
+
+                      if (remainingBudget != null)
+                        ListTile(
+                          leading: Icon(
+                            exceedsBudget
+                                ? Icons.warning_amber_outlined
+                                : Icons.savings_outlined,
+                          ),
+                          title: Text(
+                            exceedsBudget
+                                ? 'Vượt ngân sách'
+                                : 'Ngân sách còn lại',
+                          ),
+                          subtitle: Text(
+                            _formatVnd(remainingBudget),
+                            style: TextStyle(
+                              color: exceedsBudget
+                                  ? Theme.of(context).colorScheme.error
+                                  : null,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+
+                      if (budgetUsagePercent != null)
+                        ListTile(
+                          leading: const Icon(Icons.percent),
+                          title: const Text('Tỷ lệ ngân sách'),
+                          subtitle: Text(
+                            '${budgetUsagePercent.toStringAsFixed(1)}%',
                           ),
                         ),
                     ],
