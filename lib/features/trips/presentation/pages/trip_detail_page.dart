@@ -37,11 +37,15 @@ class TripDetailPage extends ConsumerWidget {
     final local = value.toLocal();
 
     final day = local.day.toString().padLeft(2, '0');
+
     final month = local.month.toString().padLeft(2, '0');
+
     final hour = local.hour.toString().padLeft(2, '0');
+
     final minute = local.minute.toString().padLeft(2, '0');
 
-    return '$day/$month/${local.year} $hour:$minute';
+    return '$day/$month/${local.year} '
+        '$hour:$minute';
   }
 
   String _formatBudget(Trip trip) {
@@ -49,11 +53,54 @@ class TripDetailPage extends ConsumerWidget {
       return 'Chưa đặt';
     }
 
-    return '${trip.budgetTotal!.toStringAsFixed(0)} ${trip.currency}';
+    return '${trip.budgetTotal!.toStringAsFixed(0)} '
+        '${trip.currency}';
+  }
+
+  String _formatDistance(int? meters) {
+    if (meters == null) {
+      return 'Chưa tính';
+    }
+
+    if (meters < 1000) {
+      return '$meters m';
+    }
+
+    return '${(meters / 1000).toStringAsFixed(1)} km';
+  }
+
+  String _formatDuration(int? seconds) {
+    if (seconds == null) {
+      return 'Chưa tính';
+    }
+
+    final totalMinutes = (seconds / 60).round();
+
+    final hours = totalMinutes ~/ 60;
+
+    final minutes = totalMinutes % 60;
+
+    if (hours == 0) {
+      return '$minutes phút';
+    }
+
+    if (minutes == 0) {
+      return '$hours giờ';
+    }
+
+    return '$hours giờ $minutes phút';
   }
 
   Future<void> _editTrip(BuildContext context, WidgetRef ref) async {
     await context.push('/trips/$tripId/edit');
+
+    ref.invalidate(tripByIdProvider(tripId));
+
+    ref.invalidate(currentTripsProvider);
+  }
+
+  Future<void> _viewRoute(BuildContext context, WidgetRef ref) async {
+    await context.push('/trips/$tripId/route');
 
     ref.invalidate(tripByIdProvider(tripId));
 
@@ -74,13 +121,18 @@ class TripDetailPage extends ConsumerWidget {
         missingFields.add('phương tiện');
       }
 
-      if (trip.startName == null || trip.startName!.trim().isEmpty) {
-        missingFields.add('điểm bắt đầu');
+      if (trip.startName == null ||
+          trip.startName!.trim().isEmpty ||
+          trip.startPlaceId == null ||
+          trip.startPlaceId!.trim().isEmpty) {
+        missingFields.add('điểm bắt đầu trên bản đồ');
       }
 
       if (trip.destinationName == null ||
-          trip.destinationName!.trim().isEmpty) {
-        missingFields.add('điểm đến');
+          trip.destinationName!.trim().isEmpty ||
+          trip.destinationPlaceId == null ||
+          trip.destinationPlaceId!.trim().isEmpty) {
+        missingFields.add('điểm đến trên bản đồ');
       }
 
       if (trip.plannedStartAt == null) {
@@ -92,7 +144,8 @@ class TripDetailPage extends ConsumerWidget {
           SnackBar(
             content: Text(
               'Chưa thể lên kế hoạch. '
-              'Cần bổ sung: ${missingFields.join(', ')}.',
+              'Cần bổ sung: '
+              '${missingFields.join(', ')}.',
             ),
           ),
         );
@@ -121,7 +174,12 @@ class TripDetailPage extends ConsumerWidget {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Không thể cập nhật trạng thái: $error')),
+        SnackBar(
+          content: Text(
+            'Không thể cập nhật '
+            'trạng thái: $error',
+          ),
+        ),
       );
     }
   }
@@ -137,8 +195,9 @@ class TripDetailPage extends ConsumerWidget {
         return AlertDialog(
           title: const Text('Xóa chuyến đi?'),
           content: Text(
-            'Chuyến "${trip.name}" và dữ liệu '
-            'thành viên liên quan sẽ bị xóa.',
+            'Chuyến "${trip.name}" '
+            'và dữ liệu thành viên '
+            'liên quan sẽ bị xóa.',
           ),
           actions: [
             TextButton(
@@ -178,7 +237,12 @@ class TripDetailPage extends ConsumerWidget {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Không thể xóa chuyến đi: $error')),
+        SnackBar(
+          content: Text(
+            'Không thể xóa '
+            'chuyến đi: $error',
+          ),
+        ),
       );
     }
   }
@@ -203,7 +267,10 @@ class TripDetailPage extends ConsumerWidget {
                   children: [
                     const Icon(Icons.error_outline, size: 48),
                     const SizedBox(height: 16),
-                    const Text('Không thể tải chuyến đi.'),
+                    const Text(
+                      'Không thể tải '
+                      'chuyến đi.',
+                    ),
                     const SizedBox(height: 16),
                     FilledButton(
                       onPressed: () {
@@ -238,6 +305,12 @@ class TripDetailPage extends ConsumerWidget {
               },
             );
 
+            final canViewRoute =
+                trip.startPlaceId != null &&
+                trip.startPlaceId!.trim().isNotEmpty &&
+                trip.destinationPlaceId != null &&
+                trip.destinationPlaceId!.trim().isNotEmpty;
+
             return ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -248,7 +321,10 @@ class TripDetailPage extends ConsumerWidget {
 
                 const SizedBox(height: 8),
 
-                Chip(label: Text(_statusLabel(trip.status))),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Chip(label: Text(_statusLabel(trip.status))),
+                ),
 
                 if (trip.description != null &&
                     trip.description!.trim().isNotEmpty) ...[
@@ -269,12 +345,18 @@ class TripDetailPage extends ConsumerWidget {
                       ListTile(
                         leading: const Icon(Icons.trip_origin),
                         title: const Text('Điểm bắt đầu'),
-                        subtitle: Text(trip.startName ?? 'Chưa chọn'),
+                        subtitle: Text(
+                          trip.startAddress ?? trip.startName ?? 'Chưa chọn',
+                        ),
                       ),
                       ListTile(
                         leading: const Icon(Icons.location_on_outlined),
                         title: const Text('Điểm đến'),
-                        subtitle: Text(trip.destinationName ?? 'Chưa chọn'),
+                        subtitle: Text(
+                          trip.destinationAddress ??
+                              trip.destinationName ??
+                              'Chưa chọn',
+                        ),
                       ),
                     ],
                   ),
@@ -306,9 +388,62 @@ class TripDetailPage extends ConsumerWidget {
                   ),
                 ),
 
+                const SizedBox(height: 8),
+
+                Card(
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.route),
+                        title: const Text('Khoảng cách tuyến'),
+                        subtitle: Text(_formatDistance(trip.routeDistanceM)),
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.schedule),
+                        title: const Text('Thời gian di chuyển'),
+                        subtitle: Text(_formatDuration(trip.routeDurationS)),
+                      ),
+                    ],
+                  ),
+                ),
+
                 const SizedBox(height: 24),
 
-                FilledButton.icon(
+                if (canViewRoute) ...[
+                  FilledButton.icon(
+                    onPressed: () {
+                      _viewRoute(context, ref);
+                    },
+                    icon: const Icon(Icons.route),
+                    label: const Text('Xem tuyến đường'),
+                  ),
+
+                  const SizedBox(height: 12),
+                ] else ...[
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Text(
+                              'Hãy chọn lại '
+                              'điểm bắt đầu và '
+                              'điểm đến trên bản đồ '
+                              'để tính tuyến.',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+                ],
+
+                OutlinedButton.icon(
                   onPressed: () {
                     _editTrip(context, ref);
                   },

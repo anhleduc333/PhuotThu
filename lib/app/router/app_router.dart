@@ -11,6 +11,7 @@ import '../../features/profile/presentation/pages/edit_profile_page.dart';
 import '../../features/profile/presentation/pages/profile_page.dart';
 import '../../features/trips/presentation/pages/trip_detail_page.dart';
 import '../../features/trips/presentation/pages/trip_form_page.dart';
+import '../../features/trips/presentation/pages/trip_route_page.dart';
 import '../../features/trips/presentation/pages/trips_page.dart';
 import '../../features/vehicle/presentation/pages/vehicle_form_page.dart';
 import '../../features/vehicle/presentation/pages/vehicles_page.dart';
@@ -59,7 +60,6 @@ GoRouter createAppRouter({
         },
       ),
 
-      // Dùng chung cho Map và Trip.
       GoRoute(
         path: '/place-search',
         name: 'place-search',
@@ -123,6 +123,16 @@ GoRouter createAppRouter({
                           final tripId = state.pathParameters['tripId']!;
 
                           return TripFormPage(tripId: tripId);
+                        },
+                      ),
+
+                      GoRoute(
+                        path: 'route',
+                        name: 'trip-route',
+                        builder: (context, state) {
+                          final tripId = state.pathParameters['tripId']!;
+
+                          return TripRoutePage(tripId: tripId);
                         },
                       ),
                     ],
