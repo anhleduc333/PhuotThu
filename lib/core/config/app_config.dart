@@ -7,18 +7,32 @@ class AppConfig {
     'SUPABASE_PUBLISHABLE_KEY',
   );
 
+  static const String geoapifyApiKey = String.fromEnvironment(
+    'GEOAPIFY_API_KEY',
+  );
+
   static void validate() {
     if (supabaseUrl.isEmpty) {
       throw StateError(
         'Missing SUPABASE_URL. '
-        'Run the app with --dart-define=SUPABASE_URL=...',
+        'Run the app with '
+        '--dart-define=SUPABASE_URL=...',
       );
     }
 
     if (supabasePublishableKey.isEmpty) {
       throw StateError(
         'Missing SUPABASE_PUBLISHABLE_KEY. '
-        'Run the app with --dart-define=SUPABASE_PUBLISHABLE_KEY=...',
+        'Run the app with '
+        '--dart-define=SUPABASE_PUBLISHABLE_KEY=...',
+      );
+    }
+
+    if (geoapifyApiKey.isEmpty) {
+      throw StateError(
+        'Missing GEOAPIFY_API_KEY. '
+        'Run the app with '
+        '--dart-define=GEOAPIFY_API_KEY=...',
       );
     }
   }

@@ -3,7 +3,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../map/data/along_route_providers.dart';
 import '../../../map/data/route_providers.dart';
+import '../../../map/domain/along_route_place.dart';
 import '../../../map/domain/route_result.dart';
 import '../../../vehicle/data/vehicle_repository.dart';
 import '../../data/fuel_price_repository.dart';
@@ -49,6 +51,18 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  final Set<AlongRoutePlaceType> _selectedAlongRouteTypes = {
+    AlongRoutePlaceType.fuel,
+    AlongRoutePlaceType.restArea,
+  };
+
+  List<AlongRoutePlace> _alongRoutePlaces = const [];
+
+  bool _isSearchingAlongRoute = false;
+  bool _hasSearchedAlongRoute = false;
+
+  String? _alongRouteError;
+
   @override
   void initState() {
     super.initState();
@@ -73,6 +87,11 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         _exceedsBudget = false;
         _estimateMessage = null;
+
+        _alongRoutePlaces = const [];
+        _alongRouteError = null;
+        _hasSearchedAlongRoute = false;
+        _isSearchingAlongRoute = false;
       });
     }
 
@@ -282,9 +301,6 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       final costEstimate = costEstimator.calculate(
         estimatedFuelLiters: fuelEstimate.liters,
         unitPriceVndPerLiter: fuelPrice.unitPriceVndPerLiter,
-
-        // Tổng ngân sách sẽ được TripBudgetCalculator
-        // xử lý sau khi lấy toàn bộ trip_budget_items.
         budget: null,
       );
 
@@ -315,24 +331,16 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         return;
       }
 
-      // Chỉ cập nhật lượng nhiên liệu vào bảng trips.
-      //
-      // Không ghi trực tiếp estimated_min_cost nữa.
       await tripRepository.updateEstimatedFuel(
         tripId: widget.tripId,
         estimatedFuelL: fuelEstimate.liters,
       );
 
-      // Ghi chi phí nhiên liệu vào Budget Simulator.
-      //
-      // Nếu đã có category = fuel thì upsert sẽ cập nhật.
       await budgetRepository.upsertFuelCost(
         tripId: widget.tripId,
         amountVnd: costEstimate.fuelCost,
       );
 
-      // Trigger PostgreSQL trên trip_budget_items
-      // sẽ tự tính lại trips.estimated_min_cost.
       ref.invalidate(tripBudgetItemsProvider(widget.tripId));
 
       await _refreshBudgetSummary(trip);
@@ -384,6 +392,231 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
       _exceedsBudget = summary.exceedsBudget;
     });
+  }
+
+  Future<void> _searchAlongRoute() async {
+    final route = _route;
+
+    if (route == null || route.points.isEmpty) {
+      return;
+    }
+
+    if (_selectedAlongRouteTypes.isEmpty) {
+      setState(() {
+        _alongRouteError = 'Hãy chọn ít nhất một loại dịch vụ.';
+      });
+
+      return;
+    }
+
+    setState(() {
+      _isSearchingAlongRoute = true;
+      _alongRouteError = null;
+      _hasSearchedAlongRoute = false;
+    });
+
+    try {
+      final service = ref.read(alongRouteServiceProvider);
+
+      final result = await service.search(
+        routePoints: route.points,
+        types: Set<AlongRoutePlaceType>.from(_selectedAlongRouteTypes),
+        searchRadiusMeters: 2000,
+        maxResults: 50,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _alongRoutePlaces = result.places;
+
+        _isSearchingAlongRoute = false;
+        _hasSearchedAlongRoute = true;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _alongRoutePlaces = const [];
+        _isSearchingAlongRoute = false;
+        _hasSearchedAlongRoute = true;
+        _alongRouteError =
+            'Không thể tìm dịch vụ dọc tuyến.\n'
+            '$error';
+      });
+    }
+  }
+
+  void _clearAlongRoutePlaces() {
+    setState(() {
+      _alongRoutePlaces = const [];
+      _hasSearchedAlongRoute = false;
+      _alongRouteError = null;
+    });
+  }
+
+  void _toggleAlongRouteType(AlongRoutePlaceType type, bool selected) {
+    setState(() {
+      if (selected) {
+        _selectedAlongRouteTypes.add(type);
+      } else {
+        _selectedAlongRouteTypes.remove(type);
+      }
+
+      _alongRouteError = null;
+    });
+  }
+
+  void _showAlongRoutePlace(BuildContext context, AlongRoutePlace place) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (bottomSheetContext) {
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CircleAvatar(child: Icon(_alongRouteIcon(place.type))),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            place.name,
+                            style: Theme.of(bottomSheetContext)
+                                .textTheme
+                                .titleLarge,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(place.type.label),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+
+                _PlaceDetailRow(
+                  icon: Icons.route_outlined,
+                  label: 'Cách tuyến',
+                  value: _formatDistanceFromRoute(
+                    place.distanceFromRouteMeters,
+                  ),
+                ),
+
+                if (place.address != null)
+                  _PlaceDetailRow(
+                    icon: Icons.location_on_outlined,
+                    label: 'Địa chỉ',
+                    value: place.address!,
+                  ),
+
+                if (place.openingHours != null)
+                  _PlaceDetailRow(
+                    icon: Icons.schedule_outlined,
+                    label: 'Giờ mở cửa',
+                    value: place.openingHours!,
+                  ),
+
+                if (place.phone != null)
+                  _PlaceDetailRow(
+                    icon: Icons.phone_outlined,
+                    label: 'Điện thoại',
+                    value: place.phone!,
+                  ),
+
+                if (place.website != null)
+                  _PlaceDetailRow(
+                    icon: Icons.language_outlined,
+                    label: 'Website',
+                    value: place.website!,
+                  ),
+
+                _PlaceDetailRow(
+                  icon: Icons.map_outlined,
+                  label: 'Tọa độ',
+                  value:
+                      '${place.latitude.toStringAsFixed(6)}, '
+                      '${place.longitude.toStringAsFixed(6)}',
+                ),
+
+                const SizedBox(height: 8),
+
+                Text(
+                  'Dữ liệu địa điểm: '
+                  '${_alongRouteSourceLabel(place.source)}.',
+                  style: Theme.of(bottomSheetContext).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  IconData _alongRouteIcon(AlongRoutePlaceType type) {
+    switch (type) {
+      case AlongRoutePlaceType.fuel:
+        return Icons.local_gas_station;
+      case AlongRoutePlaceType.restArea:
+        return Icons.hotel_outlined;
+      case AlongRoutePlaceType.food:
+        return Icons.restaurant_outlined;
+      case AlongRoutePlaceType.repair:
+        return Icons.build_outlined;
+      case AlongRoutePlaceType.medical:
+        return Icons.local_hospital_outlined;
+    }
+  }
+
+  Color _alongRouteColor(AlongRoutePlaceType type) {
+    switch (type) {
+      case AlongRoutePlaceType.fuel:
+        return Colors.amber.shade800;
+      case AlongRoutePlaceType.restArea:
+        return Colors.indigo;
+      case AlongRoutePlaceType.food:
+        return Colors.deepOrange;
+      case AlongRoutePlaceType.repair:
+        return Colors.blueGrey;
+      case AlongRoutePlaceType.medical:
+        return Colors.red;
+    }
+  }
+
+  String _alongRouteSourceLabel(String source) {
+    switch (source.toLowerCase()) {
+      case 'geoapify':
+        return 'Geoapify';
+      case 'overpass':
+        return 'OpenStreetMap / Overpass';
+      default:
+        return source.trim().isEmpty ? 'Không xác định' : source;
+    }
+  }
+
+  String _formatDistanceFromRoute(double? meters) {
+    if (meters == null) {
+      return 'Không xác định';
+    }
+
+    if (meters < 1000) {
+      return '${meters.round()} m';
+    }
+
+    return '${(meters / 1000).toStringAsFixed(1)} km';
   }
 
   void _fitRoute() {
@@ -561,6 +794,27 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       },
     );
 
+    final alongRouteMarkers = _alongRoutePlaces.map((place) {
+      return Marker(
+        point: LatLng(place.latitude, place.longitude),
+        width: 42,
+        height: 42,
+        child: GestureDetector(
+          onTap: () {
+            _showAlongRoutePlace(context, place);
+          },
+          child: _AlongRouteMarker(
+            icon: _alongRouteIcon(place.type),
+            color: _alongRouteColor(place.type),
+          ),
+        ),
+      );
+    });
+
+    final displayedAlongRouteTypes = AlongRoutePlaceType.values
+        .where((type) => _alongRoutePlaces.any((place) => place.type == type))
+        .toList(growable: false);
+
     return Stack(
       children: [
         FlutterMap(
@@ -589,6 +843,8 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
             MarkerLayer(
               markers: [
+                ...alongRouteMarkers,
+
                 Marker(
                   point: startPoint,
                   width: 54,
@@ -599,6 +855,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                     color: Theme.of(context).colorScheme.primary,
                   ),
                 ),
+
                 Marker(
                   point: destinationPoint,
                   width: 54,
@@ -626,9 +883,12 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
           bottom: 12,
           child: Card(
             elevation: 4,
-            child: Padding(
-              padding: const EdgeInsets.all(14),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * 0.58,
+              ),
               child: SingleChildScrollView(
+                padding: const EdgeInsets.all(14),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -718,6 +978,144 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                         ),
                     ],
 
+                    const Divider(height: 24),
+
+                    Row(
+                      children: [
+                        const Icon(Icons.travel_explore_outlined, size: 22),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Dịch vụ dọc tuyến',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                        ),
+                        if (_alongRoutePlaces.isNotEmpty)
+                          Text(
+                            '${_alongRoutePlaces.length} điểm',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: AlongRoutePlaceType.values.map((type) {
+                        return FilterChip(
+                          selected: _selectedAlongRouteTypes.contains(type),
+                          avatar: Icon(_alongRouteIcon(type), size: 18),
+                          label: Text(type.label),
+                          onSelected: _isSearchingAlongRoute
+                              ? null
+                              : (selected) {
+                                  _toggleAlongRouteType(type, selected);
+                                },
+                        );
+                      }).toList(),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed:
+                            _isSearchingAlongRoute ||
+                                _selectedAlongRouteTypes.isEmpty
+                            ? null
+                            : _searchAlongRoute,
+                        icon: _isSearchingAlongRoute
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.search),
+                        label: Text(
+                          _isSearchingAlongRoute
+                              ? 'Đang tìm dịch vụ...'
+                              : 'Tìm dịch vụ dọc tuyến',
+                        ),
+                      ),
+                    ),
+
+                    if (_hasSearchedAlongRoute && _alongRouteError == null) ...[
+                      const SizedBox(height: 10),
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _alongRoutePlaces.isEmpty
+                                  ? 'Không tìm thấy dịch vụ phù hợp trong phạm vi 2 km quanh tuyến.'
+                                  : 'Đã tìm thấy ${_alongRoutePlaces.length} địa điểm trong phạm vi 2 km quanh tuyến.',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+
+                          if (_alongRoutePlaces.isNotEmpty)
+                            TextButton(
+                              onPressed: _clearAlongRoutePlaces,
+                              child: const Text('Xóa'),
+                            ),
+                        ],
+                      ),
+
+                      if (displayedAlongRouteTypes.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Chú giải marker',
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 8,
+                          children: displayedAlongRouteTypes.map((type) {
+                            return _AlongRouteLegendItem(
+                              icon: _alongRouteIcon(type),
+                              color: _alongRouteColor(type),
+                              label: type.label,
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Dữ liệu POI: Geoapify.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ],
+
+                    if (_alongRouteError != null) ...[
+                      const SizedBox(height: 10),
+
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.warning_amber_outlined,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _alongRouteError!,
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+
                     if (_estimateMessage != null) ...[
                       const SizedBox(height: 12),
                       Row(
@@ -789,6 +1187,57 @@ class _RouteMarker extends StatelessWidget {
   }
 }
 
+class _AlongRouteMarker extends StatelessWidget {
+  const _AlongRouteMarker({required this.icon, required this.color});
+
+  final IconData icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 4,
+      color: color,
+      shape: const CircleBorder(),
+      child: SizedBox(
+        width: 38,
+        height: 38,
+        child: Icon(icon, size: 21, color: Colors.white),
+      ),
+    );
+  }
+}
+
+class _AlongRouteLegendItem extends StatelessWidget {
+  const _AlongRouteLegendItem({
+    required this.icon,
+    required this.color,
+    required this.label,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          alignment: Alignment.center,
+          child: Icon(icon, size: 14, color: Colors.white),
+        ),
+        const SizedBox(width: 6),
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
+      ],
+    );
+  }
+}
+
 class _SummaryItem extends StatelessWidget {
   const _SummaryItem({
     required this.icon,
@@ -847,6 +1296,40 @@ class _SummaryLine extends StatelessWidget {
             value,
             style: TextStyle(fontWeight: FontWeight.w600, color: color),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlaceDetailRow extends StatelessWidget {
+  const _PlaceDetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          Expanded(child: Text(value)),
         ],
       ),
     );
