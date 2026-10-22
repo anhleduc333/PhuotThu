@@ -9,6 +9,7 @@ import '../../features/map/presentation/pages/map_page.dart';
 import '../../features/map/presentation/pages/place_search_page.dart';
 import '../../features/profile/presentation/pages/edit_profile_page.dart';
 import '../../features/profile/presentation/pages/profile_page.dart';
+import '../../features/trips/presentation/pages/trip_budget_page.dart';
 import '../../features/trips/presentation/pages/trip_detail_page.dart';
 import '../../features/trips/presentation/pages/trip_form_page.dart';
 import '../../features/trips/presentation/pages/trip_route_page.dart';
@@ -28,7 +29,6 @@ GoRouter createAppRouter({
       final loggedIn = isAuthenticated();
 
       final onLogin = state.matchedLocation == '/login';
-
       final onRegister = state.matchedLocation == '/register';
 
       final onAuthPage = onLogin || onRegister;
@@ -133,6 +133,16 @@ GoRouter createAppRouter({
                           final tripId = state.pathParameters['tripId']!;
 
                           return TripRoutePage(tripId: tripId);
+                        },
+                      ),
+
+                      GoRoute(
+                        path: 'budget',
+                        name: 'trip-budget',
+                        builder: (context, state) {
+                          final tripId = state.pathParameters['tripId']!;
+
+                          return TripBudgetPage(tripId: tripId);
                         },
                       ),
                     ],

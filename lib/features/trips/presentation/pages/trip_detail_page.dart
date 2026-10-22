@@ -4,9 +4,11 @@ import 'package:go_router/go_router.dart';
 
 import '../../../vehicle/data/vehicle_providers.dart';
 import '../../../vehicle/domain/vehicle.dart';
+import '../../data/trip_budget_providers.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../domain/trip.dart';
+import '../../domain/trip_budget_item.dart';
 
 class TripDetailPage extends ConsumerWidget {
   const TripDetailPage({required this.tripId, super.key});
@@ -126,22 +128,37 @@ class TripDetailPage extends ConsumerWidget {
     return '${(fuel / tank).toStringAsFixed(2)} bình';
   }
 
-  String _derivedUnitPrice(Trip trip) {
+  TripBudgetItem? _findFuelItem(List<TripBudgetItem> items) {
+    for (final item in items) {
+      if (item.category == 'fuel') {
+        return item;
+      }
+    }
+
+    return null;
+  }
+
+  String _derivedUnitPrice({
+    required Trip trip,
+    required TripBudgetItem? fuelItem,
+  }) {
     final fuel = trip.estimatedFuelL;
 
-    final cost = trip.estimatedMinCost;
+    final fuelCost = fuelItem?.amountVnd;
 
-    if (fuel == null || fuel <= 0 || cost == null) {
+    if (fuel == null || fuel <= 0 || fuelCost == null || fuelCost <= 0) {
       return 'Chưa tính';
     }
 
-    return '${_formatVnd(cost / fuel)}/lít';
+    return '${_formatVnd(fuelCost / fuel)}/lít';
   }
 
   Future<void> _editTrip(BuildContext context, WidgetRef ref) async {
     await context.push('/trips/$tripId/edit');
 
     ref.invalidate(tripByIdProvider(tripId));
+
+    ref.invalidate(tripBudgetItemsProvider(tripId));
 
     ref.invalidate(currentTripsProvider);
   }
@@ -150,6 +167,18 @@ class TripDetailPage extends ConsumerWidget {
     await context.push('/trips/$tripId/route');
 
     ref.invalidate(tripByIdProvider(tripId));
+
+    ref.invalidate(tripBudgetItemsProvider(tripId));
+
+    ref.invalidate(currentTripsProvider);
+  }
+
+  Future<void> _viewBudget(BuildContext context, WidgetRef ref) async {
+    await context.push('/trips/$tripId/budget');
+
+    ref.invalidate(tripByIdProvider(tripId));
+
+    ref.invalidate(tripBudgetItemsProvider(tripId));
 
     ref.invalidate(currentTripsProvider);
   }
@@ -243,8 +272,8 @@ class TripDetailPage extends ConsumerWidget {
           title: const Text('Xóa chuyến đi?'),
           content: Text(
             'Chuyến "${trip.name}" '
-            'và dữ liệu thành viên '
-            'liên quan sẽ bị xóa.',
+            'và dữ liệu liên quan '
+            'sẽ bị xóa.',
           ),
           actions: [
             TextButton(
@@ -293,6 +322,8 @@ class TripDetailPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tripAsync = ref.watch(tripByIdProvider(tripId));
 
+    final budgetItemsAsync = ref.watch(tripBudgetItemsProvider(tripId));
+
     return Scaffold(
       appBar: AppBar(title: const Text('Chi tiết chuyến đi')),
       body: SafeArea(
@@ -314,6 +345,8 @@ class TripDetailPage extends ConsumerWidget {
                     FilledButton(
                       onPressed: () {
                         ref.invalidate(tripByIdProvider(tripId));
+
+                        ref.invalidate(tripBudgetItemsProvider(tripId));
                       },
                       child: const Text('Thử lại'),
                     ),
@@ -353,6 +386,17 @@ class TripDetailPage extends ConsumerWidget {
                 trip.destinationPlaceId!.trim().isNotEmpty;
 
             final isElectric = selectedVehicle?.fuelType == 'electric';
+
+            final fuelItem = budgetItemsAsync.maybeWhen<TripBudgetItem?>(
+              data: (items) {
+                return _findFuelItem(items);
+              },
+              orElse: () => null,
+            );
+
+            final budgetItemsLoading = budgetItemsAsync.isLoading;
+
+            final fuelCost = fuelItem?.amountVnd;
 
             final remainingBudget =
                 trip.budgetTotal != null && trip.estimatedMinCost != null
@@ -501,13 +545,33 @@ class TripDetailPage extends ConsumerWidget {
                       ListTile(
                         leading: const Icon(Icons.payments_outlined),
                         title: const Text('Đơn giá nhiên liệu'),
-                        subtitle: Text(_derivedUnitPrice(trip)),
+                        subtitle: Text(
+                          budgetItemsLoading
+                              ? 'Đang tải...'
+                              : _derivedUnitPrice(
+                                  trip: trip,
+                                  fuelItem: fuelItem,
+                                ),
+                        ),
+                      ),
+
+                      ListTile(
+                        leading: const Icon(Icons.local_gas_station_outlined),
+                        title: const Text('Chi phí nhiên liệu'),
+                        subtitle: Text(
+                          budgetItemsLoading
+                              ? 'Đang tải...'
+                              : _formatVnd(fuelCost),
+                        ),
                       ),
 
                       ListTile(
                         leading: const Icon(Icons.receipt_long_outlined),
-                        title: const Text('Chi phí nhiên liệu'),
-                        subtitle: Text(_formatVnd(trip.estimatedMinCost)),
+                        title: const Text('Tổng chi phí dự kiến'),
+                        subtitle: Text(
+                          _formatVnd(trip.estimatedMinCost),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
                       ),
 
                       if (remainingBudget != null)
@@ -539,6 +603,12 @@ class TripDetailPage extends ConsumerWidget {
                           title: const Text('Tỷ lệ ngân sách'),
                           subtitle: Text(
                             '${budgetUsagePercent.toStringAsFixed(1)}%',
+                            style: TextStyle(
+                              color: exceedsBudget
+                                  ? Theme.of(context).colorScheme.error
+                                  : null,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                     ],
@@ -547,8 +617,18 @@ class TripDetailPage extends ConsumerWidget {
 
                 const SizedBox(height: 24),
 
+                FilledButton.icon(
+                  onPressed: () {
+                    _viewBudget(context, ref);
+                  },
+                  icon: const Icon(Icons.account_balance_wallet_outlined),
+                  label: const Text('Mô phỏng ngân sách'),
+                ),
+
+                const SizedBox(height: 12),
+
                 if (canViewRoute) ...[
-                  FilledButton.icon(
+                  OutlinedButton.icon(
                     onPressed: () {
                       _viewRoute(context, ref);
                     },

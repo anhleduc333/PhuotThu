@@ -7,10 +7,13 @@ import '../../../map/data/route_providers.dart';
 import '../../../map/domain/route_result.dart';
 import '../../../vehicle/data/vehicle_repository.dart';
 import '../../data/fuel_price_repository.dart';
+import '../../data/trip_budget_providers.dart';
+import '../../data/trip_budget_repository.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
 import '../../domain/trip.dart';
+import '../../domain/trip_budget_calculator.dart';
 import '../../domain/trip_cost_estimator.dart';
 import '../../domain/trip_fuel_estimator.dart';
 import '../../domain/trip_route_points.dart';
@@ -35,6 +38,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
   double? _unitFuelPrice;
   double? _estimatedFuelCost;
+
   double? _remainingBudget;
   double? _budgetUsagePercent;
 
@@ -63,6 +67,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         _unitFuelPrice = null;
         _estimatedFuelCost = null;
+
         _remainingBudget = null;
         _budgetUsagePercent = null;
 
@@ -127,15 +132,22 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   Future<void> _calculateFuelAndCost(RouteResult route) async {
     final tripRepository = ref.read(tripRepositoryProvider);
 
+    final budgetRepository = ref.read(tripBudgetRepositoryProvider);
+
     try {
       final trip = await tripRepository.getTripById(widget.tripId);
 
       if (trip.vehicleId == null) {
-        await tripRepository.updateTripEstimates(
+        await tripRepository.updateEstimatedFuel(
           tripId: widget.tripId,
           estimatedFuelL: null,
-          estimatedMinCost: null,
         );
+
+        await budgetRepository.removeFuelCost(widget.tripId);
+
+        ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+        await _refreshBudgetSummary(trip);
 
         if (mounted) {
           setState(() {
@@ -151,11 +163,16 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
           .getVehicleById(trip.vehicleId!);
 
       if (vehicle.fuelType == 'electric') {
-        await tripRepository.updateTripEstimates(
+        await tripRepository.updateEstimatedFuel(
           tripId: widget.tripId,
           estimatedFuelL: null,
-          estimatedMinCost: null,
         );
+
+        await budgetRepository.removeFuelCost(widget.tripId);
+
+        ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+        await _refreshBudgetSummary(trip);
 
         if (mounted) {
           setState(() {
@@ -177,11 +194,16 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       );
 
       if (fuelEstimate == null) {
-        await tripRepository.updateTripEstimates(
+        await tripRepository.updateEstimatedFuel(
           tripId: widget.tripId,
           estimatedFuelL: null,
-          estimatedMinCost: null,
         );
+
+        await budgetRepository.removeFuelCost(widget.tripId);
+
+        ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+        await _refreshBudgetSummary(trip);
 
         if (mounted) {
           setState(() {
@@ -197,11 +219,16 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       final fuelType = vehicle.fuelType;
 
       if (fuelType == null || fuelType.trim().isEmpty) {
-        await tripRepository.updateTripEstimates(
+        await tripRepository.updateEstimatedFuel(
           tripId: widget.tripId,
           estimatedFuelL: fuelEstimate.liters,
-          estimatedMinCost: null,
         );
+
+        await budgetRepository.removeFuelCost(widget.tripId);
+
+        ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+        await _refreshBudgetSummary(trip);
 
         if (mounted) {
           setState(() {
@@ -223,11 +250,16 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
           .getLatestPrice(fuelType);
 
       if (fuelPrice == null) {
-        await tripRepository.updateTripEstimates(
+        await tripRepository.updateEstimatedFuel(
           tripId: widget.tripId,
           estimatedFuelL: fuelEstimate.liters,
-          estimatedMinCost: null,
         );
+
+        await budgetRepository.removeFuelCost(widget.tripId);
+
+        ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+        await _refreshBudgetSummary(trip);
 
         if (mounted) {
           setState(() {
@@ -250,24 +282,60 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       final costEstimate = costEstimator.calculate(
         estimatedFuelLiters: fuelEstimate.liters,
         unitPriceVndPerLiter: fuelPrice.unitPriceVndPerLiter,
-        budget: trip.budgetTotal,
+
+        // Tổng ngân sách sẽ được TripBudgetCalculator
+        // xử lý sau khi lấy toàn bộ trip_budget_items.
+        budget: null,
       );
 
       if (costEstimate == null) {
-        await tripRepository.updateTripEstimates(
+        await tripRepository.updateEstimatedFuel(
           tripId: widget.tripId,
           estimatedFuelL: fuelEstimate.liters,
-          estimatedMinCost: null,
         );
+
+        await budgetRepository.removeFuelCost(widget.tripId);
+
+        ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+        await _refreshBudgetSummary(trip);
+
+        if (mounted) {
+          setState(() {
+            _estimatedFuelLiters = fuelEstimate.liters;
+
+            _tankEquivalent = fuelEstimate.tankEquivalent;
+
+            _estimateMessage =
+                'Đã tính nhiên liệu nhưng chưa thể '
+                'tính chi phí nhiên liệu.';
+          });
+        }
 
         return;
       }
 
-      await tripRepository.updateTripEstimates(
+      // Chỉ cập nhật lượng nhiên liệu vào bảng trips.
+      //
+      // Không ghi trực tiếp estimated_min_cost nữa.
+      await tripRepository.updateEstimatedFuel(
         tripId: widget.tripId,
         estimatedFuelL: fuelEstimate.liters,
-        estimatedMinCost: costEstimate.fuelCost,
       );
+
+      // Ghi chi phí nhiên liệu vào Budget Simulator.
+      //
+      // Nếu đã có category = fuel thì upsert sẽ cập nhật.
+      await budgetRepository.upsertFuelCost(
+        tripId: widget.tripId,
+        amountVnd: costEstimate.fuelCost,
+      );
+
+      // Trigger PostgreSQL trên trip_budget_items
+      // sẽ tự tính lại trips.estimated_min_cost.
+      ref.invalidate(tripBudgetItemsProvider(widget.tripId));
+
+      await _refreshBudgetSummary(trip);
 
       if (!mounted) {
         return;
@@ -281,12 +349,6 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         _unitFuelPrice = costEstimate.unitPrice;
 
         _estimatedFuelCost = costEstimate.fuelCost;
-
-        _remainingBudget = costEstimate.remainingBudget;
-
-        _budgetUsagePercent = costEstimate.budgetUsagePercent;
-
-        _exceedsBudget = costEstimate.exceedsBudget;
       });
     } catch (_) {
       if (mounted) {
@@ -297,6 +359,31 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         });
       }
     }
+  }
+
+  Future<void> _refreshBudgetSummary(Trip trip) async {
+    final budgetRepository = ref.read(tripBudgetRepositoryProvider);
+
+    final items = await budgetRepository.getItems(widget.tripId);
+
+    const calculator = TripBudgetCalculator();
+
+    final summary = calculator.calculate(
+      items: items,
+      budgetTotal: trip.budgetTotal,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _remainingBudget = summary.remainingBudget;
+
+      _budgetUsagePercent = summary.usagePercent;
+
+      _exceedsBudget = summary.exceedsBudget;
+    });
   }
 
   void _fitRoute() {

@@ -31,6 +31,8 @@ class TripRepository {
       return null;
     }
 
+    // PostGIS POINT sử dụng thứ tự:
+    // longitude latitude
     return 'SRID=4326;POINT($longitude $latitude)';
   }
 
@@ -145,6 +147,8 @@ class TripRepository {
 
     final vehicleChanged = currentVehicleId != vehicleId;
 
+    final routeChanged = updateStartPlace || updateDestinationPlace;
+
     final updates = <String, dynamic>{
       'vehicle_id': vehicleId,
       'name': name,
@@ -178,20 +182,19 @@ class TripRepository {
       });
     }
 
-    // Thay đổi điểm đi/đến:
-    // tuyến cũ và các ước tính cũ không còn hợp lệ.
-    if (updateStartPlace || updateDestinationPlace) {
+    if (routeChanged) {
+      // Điểm đi hoặc điểm đến thay đổi:
+      // tuyến cũ không còn hợp lệ.
       updates.addAll({
         'route_distance_m': null,
         'route_duration_s': null,
         'estimated_fuel_l': null,
-        'estimated_min_cost': null,
       });
     } else if (vehicleChanged) {
-      // Chỉ thay đổi phương tiện:
-      // tuyến vẫn giữ nguyên nhưng nhiên liệu/chi phí
-      // phải được tính lại.
-      updates.addAll({'estimated_fuel_l': null, 'estimated_min_cost': null});
+      // Chỉ đổi phương tiện:
+      // tuyến vẫn đúng nhưng lượng nhiên liệu cũ
+      // không còn hợp lệ.
+      updates.addAll({'estimated_fuel_l': null});
     }
 
     await _client
@@ -199,6 +202,18 @@ class TripRepository {
         .update(updates)
         .eq('id', tripId)
         .eq('owner_id', userId);
+
+    if (routeChanged || vehicleChanged) {
+      // Chi phí nhiên liệu phụ thuộc vào tuyến đường
+      // và phương tiện.
+      //
+      // Khi một trong hai thay đổi, phải xóa khoản
+      // nhiên liệu cũ khỏi Budget Simulator.
+      //
+      // Trigger của trip_budget_items sẽ tự tính lại
+      // trips.estimated_min_cost từ các khoản còn lại.
+      await _removeFuelBudgetItem(tripId);
+    }
   }
 
   Future<void> updateTripStatus({
@@ -226,6 +241,32 @@ class TripRepository {
         .eq('owner_id', userId);
   }
 
+  /// Cập nhật riêng lượng nhiên liệu dự kiến.
+  ///
+  /// Từ DEV-08D.3 trở đi, estimated_min_cost không còn
+  /// được cập nhật trực tiếp tại đây vì nó là tổng các
+  /// khoản chi trong trip_budget_items.
+  Future<void> updateEstimatedFuel({
+    required String tripId,
+    required double? estimatedFuelL,
+  }) async {
+    final userId = _currentUserId();
+
+    await _client
+        .from('trips')
+        .update({'estimated_fuel_l': estimatedFuelL})
+        .eq('id', tripId)
+        .eq('owner_id', userId);
+  }
+
+  /// Method cũ được giữ tạm thời để các màn hình hiện tại
+  /// chưa bị lỗi trong quá trình chuyển sang Budget Simulator.
+  ///
+  /// Sau khi hoàn tất DEV-08D.3, code mới nên sử dụng:
+  /// - updateEstimatedFuel()
+  /// - trip_budget_items
+  ///
+  /// thay vì ghi trực tiếp estimated_min_cost.
   Future<void> updateTripEstimates({
     required String tripId,
     required double? estimatedFuelL,
@@ -241,6 +282,14 @@ class TripRepository {
         })
         .eq('id', tripId)
         .eq('owner_id', userId);
+  }
+
+  Future<void> _removeFuelBudgetItem(String tripId) async {
+    await _client
+        .from('trip_budget_items')
+        .delete()
+        .eq('trip_id', tripId)
+        .eq('category', 'fuel');
   }
 
   Future<void> deleteTrip(String tripId) async {
