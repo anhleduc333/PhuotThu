@@ -11,6 +11,7 @@ import '../../../vehicle/data/vehicle_repository.dart';
 import '../../data/connectivity_risk_providers.dart';
 import '../../data/connectivity_risk_service.dart';
 import '../../data/fuel_price_repository.dart';
+import '../../data/offline_trip_cache_providers.dart';
 import '../../data/smart_fuel_station_searcher.dart';
 import '../../data/smart_rest_place_searcher.dart';
 import '../../data/trip_budget_providers.dart';
@@ -20,6 +21,10 @@ import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
 import '../../domain/connectivity_risk.dart';
 import '../../domain/fuel_range_calculator.dart';
+import '../../domain/offline_readiness.dart';
+import '../../domain/offline_readiness_evaluator.dart';
+import '../../domain/offline_readiness_scorer.dart';
+import '../../domain/offline_trip_package_snapshot.dart';
 import '../../domain/rest_policy_calculator.dart';
 import '../../domain/smart_fuel_stop_recommender.dart';
 import '../../domain/smart_rest_stop_recommender.dart';
@@ -73,6 +78,15 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   bool _isAnalyzingConnectivityRisk = false;
   String? _connectivityRiskError;
 
+  bool _isSavingOfflinePackage = false;
+  OfflineTripPackageSnapshot? _offlinePackageSnapshot;
+  bool _hasOfflinePackage = false;
+  bool _offlinePackageNeedsRefresh = false;
+  DateTime? _offlinePackageSavedAt;
+  int _offlinePackagePoiCount = 0;
+  bool _offlinePackageHasConnectivity = false;
+  String? _offlinePackageError;
+
   bool _isLoading = true;
   String? _errorMessage;
 
@@ -93,9 +107,40 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     super.initState();
 
     Future.microtask(_loadRoute);
+    Future.microtask(_loadOfflinePackageState);
+  }
+
+  Future<void> _loadOfflinePackageState() async {
+    try {
+      final service = ref.read(offlineTripPackageServiceProvider);
+      final snapshot = await service.loadPackage(widget.tripId);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _offlinePackageSnapshot = snapshot;
+        _hasOfflinePackage = snapshot != null;
+        _offlinePackageNeedsRefresh = false;
+        _offlinePackageSavedAt = snapshot?.savedAt;
+        _offlinePackagePoiCount = snapshot?.pois.length ?? 0;
+        _offlinePackageHasConnectivity = snapshot?.connectivity != null;
+        _offlinePackageError = null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _offlinePackageError = 'Không thể đọc dữ liệu offline đã lưu.\n$error';
+      });
+    }
   }
 
   Future<void> _loadRoute() async {
+    final isManualRefresh = _route != null;
     if (mounted) {
       setState(() {
         _isLoading = true;
@@ -181,6 +226,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         _smartFoodPlan = baseSmartFoodPlan;
         _smartRestPlan = baseSmartRestPlan;
         _isLoading = false;
+
+        if (isManualRefresh && _hasOfflinePackage) {
+          _offlinePackageNeedsRefresh = true;
+        }
       });
 
       ref.invalidate(tripByIdProvider(widget.tripId));
@@ -698,6 +747,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         _isSearchingAlongRoute = false;
         _hasSearchedAlongRoute = true;
+
+        if (_hasOfflinePackage) {
+          _offlinePackageNeedsRefresh = true;
+        }
       });
     } catch (error) {
       if (!mounted) {
@@ -1886,6 +1939,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       setState(() {
         _connectivityRiskSummary = summary;
         _isAnalyzingConnectivityRisk = false;
+
+        if (_hasOfflinePackage) {
+          _offlinePackageNeedsRefresh = true;
+        }
       });
     } catch (error) {
       if (!mounted) {
@@ -1904,6 +1961,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     setState(() {
       _connectivityRiskSummary = null;
       _connectivityRiskError = null;
+
+      if (_hasOfflinePackage) {
+        _offlinePackageNeedsRefresh = true;
+      }
     });
   }
 
@@ -2105,6 +2166,497 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     );
   }
 
+  List<AlongRoutePlace> _offlinePoiCandidates() {
+    final values = <AlongRoutePlace>[
+      ..._alongRoutePlaces,
+      ...?_smartFuelPlan?.recommendations.map(
+        (recommendation) => recommendation.place,
+      ),
+      ...?_smartFoodPlan?.recommendations.map(
+        (recommendation) => recommendation.place,
+      ),
+      ...?_smartRestPlan?.recommendations.map(
+        (recommendation) => recommendation.place,
+      ),
+    ];
+
+    final deduplicated = <String, AlongRoutePlace>{};
+
+    for (final place in values) {
+      final key = '${place.source}:${place.sourceId}';
+      final existing = deduplicated[key];
+
+      if (existing == null) {
+        deduplicated[key] = place;
+        continue;
+      }
+
+      final existingDistance =
+          existing.distanceFromRouteMeters ?? double.infinity;
+      final candidateDistance =
+          place.distanceFromRouteMeters ?? double.infinity;
+
+      if (candidateDistance < existingDistance) {
+        deduplicated[key] = place;
+      }
+    }
+
+    return List<AlongRoutePlace>.unmodifiable(deduplicated.values);
+  }
+
+  Future<void> _saveOfflinePackage(Trip trip) async {
+    final route = _route;
+    final routePoints = _routePoints;
+
+    if (route == null || routePoints == null) {
+      return;
+    }
+
+    setState(() {
+      _isSavingOfflinePackage = true;
+      _offlinePackageError = null;
+    });
+
+    try {
+      final startName =
+          (trip.startAddress?.trim().isNotEmpty == true
+              ? trip.startAddress
+              : trip.startName) ??
+          'Điểm bắt đầu';
+
+      final destinationName =
+          (trip.destinationAddress?.trim().isNotEmpty == true
+              ? trip.destinationAddress
+              : trip.destinationName) ??
+          'Điểm đến';
+
+      final poiCandidates = _offlinePoiCandidates();
+      final connectivitySummary = _connectivityRiskSummary;
+
+      final snapshot = await ref
+          .read(offlineTripPackageServiceProvider)
+          .savePackage(
+            tripId: widget.tripId,
+            startName: startName,
+            destinationName: destinationName,
+            startLatitude: routePoints.startLatitude,
+            startLongitude: routePoints.startLongitude,
+            destinationLatitude: routePoints.destinationLatitude,
+            destinationLongitude: routePoints.destinationLongitude,
+            routeDistanceMeters: route.distanceMeters,
+            routeDurationSeconds: route.durationSeconds,
+            routePoints: route.points,
+            vehicleId: trip.vehicleId,
+            plannedStartAt: trip.plannedStartAt,
+            budgetTotal: trip.budgetTotal,
+            pois: poiCandidates,
+            connectivityAssessment: connectivitySummary?.assessment,
+            connectivityProxyOnly: connectivitySummary?.proxyOnly ?? true,
+          );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSavingOfflinePackage = false;
+        _offlinePackageSnapshot = snapshot;
+        _hasOfflinePackage = true;
+        _offlinePackageNeedsRefresh = false;
+        _offlinePackageSavedAt = snapshot.savedAt;
+        _offlinePackagePoiCount = snapshot.pois.length;
+        _offlinePackageHasConnectivity = snapshot.connectivity != null;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Đã lưu dữ liệu chuyến đi để sử dụng offline.'),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSavingOfflinePackage = false;
+        _offlinePackageError = 'Không thể lưu chuyến đi offline.\\n$error';
+      });
+    }
+  }
+
+  Future<void> _removeOfflinePackage() async {
+    setState(() {
+      _isSavingOfflinePackage = true;
+      _offlinePackageError = null;
+    });
+
+    try {
+      await ref
+          .read(offlineTripPackageServiceProvider)
+          .removePackage(widget.tripId);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSavingOfflinePackage = false;
+        _offlinePackageSnapshot = null;
+        _hasOfflinePackage = false;
+        _offlinePackageNeedsRefresh = false;
+        _offlinePackageSavedAt = null;
+        _offlinePackagePoiCount = 0;
+        _offlinePackageHasConnectivity = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Đã xóa dữ liệu offline của chuyến đi.')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSavingOfflinePackage = false;
+        _offlinePackageError = 'Không thể xóa dữ liệu offline.\\n$error';
+      });
+    }
+  }
+
+  OfflineReadinessScoringResult _offlineReadinessResult() {
+    return const OfflineReadinessEvaluator().evaluate(
+      snapshot: _offlinePackageSnapshot,
+      packageNeedsRefresh: _offlinePackageNeedsRefresh,
+    );
+  }
+
+  Color _offlineReadinessColor(OfflineReadinessLevel level) {
+    switch (level) {
+      case OfflineReadinessLevel.unknown:
+        return Colors.blueGrey;
+      case OfflineReadinessLevel.notReady:
+        return Colors.red.shade700;
+      case OfflineReadinessLevel.needsAttention:
+        return Colors.orange.shade800;
+      case OfflineReadinessLevel.ready:
+        return Colors.green.shade700;
+    }
+  }
+
+  IconData _offlineReadinessStatusIcon(OfflineReadinessItemStatus status) {
+    switch (status) {
+      case OfflineReadinessItemStatus.missing:
+        return Icons.cancel_outlined;
+      case OfflineReadinessItemStatus.stale:
+        return Icons.update_outlined;
+      case OfflineReadinessItemStatus.ready:
+        return Icons.check_circle_outline;
+      case OfflineReadinessItemStatus.notApplicable:
+        return Icons.remove_circle_outline;
+    }
+  }
+
+  Color _offlineReadinessStatusColor(
+    BuildContext context,
+    OfflineReadinessItemStatus status,
+  ) {
+    switch (status) {
+      case OfflineReadinessItemStatus.missing:
+        return Theme.of(context).colorScheme.error;
+      case OfflineReadinessItemStatus.stale:
+        return Colors.orange.shade800;
+      case OfflineReadinessItemStatus.ready:
+        return Colors.green.shade700;
+      case OfflineReadinessItemStatus.notApplicable:
+        return Theme.of(context).colorScheme.onSurfaceVariant;
+    }
+  }
+
+  String _offlineReadinessStatusLabel(OfflineReadinessItem item) {
+    if (item.status == OfflineReadinessItemStatus.notApplicable) {
+      return 'Chưa hỗ trợ';
+    }
+
+    return item.status.label;
+  }
+
+  Widget _buildOfflineReadinessSection(BuildContext context) {
+    final result = _offlineReadinessResult();
+    final assessment = result.assessment;
+    final colorScheme = Theme.of(context).colorScheme;
+    final levelColor = _offlineReadinessColor(assessment.level);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                assessment.isReady
+                    ? Icons.offline_pin_outlined
+                    : Icons.offline_bolt_outlined,
+                size: 22,
+                color: levelColor,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Sẵn sàng sử dụng offline',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              Text(
+                '${assessment.scorePercent.toStringAsFixed(0)}%',
+                style: TextStyle(
+                  color: levelColor,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: assessment.score,
+            minHeight: 7,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(
+                assessment.isReady ? Icons.check_circle : Icons.info_outline,
+                size: 18,
+                color: levelColor,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  assessment.level.label,
+                  style: TextStyle(
+                    color: levelColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (!_hasOfflinePackage) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Hãy lưu chuyến đi offline trước để PhuotThu có dữ liệu '
+              'cục bộ cho tuyến này.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ] else if (_offlinePackageNeedsRefresh) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Gói offline đã cũ so với dữ liệu đang hiển thị. '
+              'Hãy cập nhật lại trước khi khởi hành.',
+              style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+            ),
+          ],
+          if (assessment.hasConnectivityRiskContext) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Đoạn HIGH/CRITICAL: '
+              '${assessment.connectivityWarningRoutePercent!.toStringAsFixed(1)}% tuyến.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          if (result.hasConnectivityEscalation) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Nguy cơ kết nối làm tăng mức ưu tiên của một số hạng mục '
+              'chuẩn bị offline.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          const SizedBox(height: 10),
+          ...assessment.items.map(
+            (item) => _OfflineReadinessItemTile(
+              item: item,
+              icon: _offlineReadinessStatusIcon(item.status),
+              statusColor: _offlineReadinessStatusColor(context, item.status),
+              statusLabel: _offlineReadinessStatusLabel(item),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Điểm readiness chỉ phản ánh dữ liệu mà phiên bản hiện tại '
+            'có thể lưu. Tile bản đồ nền và gói thông tin khẩn cấp chưa '
+            'được tính là đã hỗ trợ.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOfflinePackageSection(BuildContext context, Trip? trip) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final statusText = !_hasOfflinePackage
+        ? 'Chưa lưu'
+        : _offlinePackageNeedsRefresh
+        ? 'Cần cập nhật'
+        : 'Đã lưu';
+
+    final statusColor = !_hasOfflinePackage
+        ? colorScheme.onSurfaceVariant
+        : _offlinePackageNeedsRefresh
+        ? Colors.orange.shade800
+        : Colors.green.shade700;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                _hasOfflinePackage
+                    ? Icons.check_circle_outline
+                    : Icons.save_alt,
+                size: 22,
+                color: statusColor,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Dữ liệu chuyến đi offline',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              Text(
+                statusText,
+                style: TextStyle(
+                  color: statusColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Lưu thông tin chuyến đi, hình học tuyến, POI đã tải và '
+            'kết quả nguy cơ kết nối hiện có trên thiết bị.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Giai đoạn này chưa lưu tile nền OpenStreetMap; bản đồ offline '
+            'hoàn chỉnh sẽ được bổ sung ở bước cache bản đồ.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          if (_hasOfflinePackage) ...[
+            const SizedBox(height: 10),
+            if (_offlinePackageSavedAt != null)
+              _SummaryLine(
+                label: 'Lưu gần nhất',
+                value: _formatOfflineSavedAt(_offlinePackageSavedAt!),
+              ),
+            _SummaryLine(
+              label: 'POI đã lưu',
+              value: '$_offlinePackagePoiCount điểm',
+            ),
+            _SummaryLine(
+              label: 'Nguy cơ kết nối',
+              value: _offlinePackageHasConnectivity
+                  ? 'Đã lưu kết quả'
+                  : 'Chưa có trong gói',
+            ),
+            if (_offlinePackageNeedsRefresh) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Dữ liệu route/POI/nguy cơ kết nối trên màn hình đã thay '
+                'đổi sau lần lưu gần nhất. Nên cập nhật lại gói offline.',
+                style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+              ),
+            ],
+          ],
+          if (_offlinePackageError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _offlinePackageError!,
+              style: TextStyle(color: colorScheme.error, fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _isSavingOfflinePackage || trip == null
+                  ? null
+                  : () => _saveOfflinePackage(trip),
+              icon: _isSavingOfflinePackage
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save_alt),
+              label: Text(
+                _isSavingOfflinePackage
+                    ? 'Đang lưu...'
+                    : _hasOfflinePackage
+                    ? 'Cập nhật dữ liệu offline'
+                    : 'Lưu chuyến đi offline',
+              ),
+            ),
+          ),
+          if (trip == null) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Đang tải thông tin chuyến đi...',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          if (_hasOfflinePackage) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: _isSavingOfflinePackage
+                    ? null
+                    : _removeOfflinePackage,
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Xóa dữ liệu offline'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _formatOfflineSavedAt(DateTime value) {
+    final local = value.toLocal();
+
+    String twoDigits(int number) {
+      return number.toString().padLeft(2, '0');
+    }
+
+    return '${twoDigits(local.day)}/${twoDigits(local.month)}/${local.year} '
+        '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
+  }
+
   void _fitRoute() {
     final route = _route;
 
@@ -2265,6 +2817,11 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     final destinationPoint = LatLng(
       routePoints.destinationLatitude,
       routePoints.destinationLongitude,
+    );
+
+    final currentTrip = tripAsync.maybeWhen<Trip?>(
+      data: (trip) => trip,
+      orElse: () => null,
     );
 
     final tripTitle = tripAsync.maybeWhen(
@@ -2620,6 +3177,14 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
                     const Divider(height: 24),
 
+                    _buildOfflinePackageSection(context, currentTrip),
+
+                    const Divider(height: 24),
+
+                    _buildOfflineReadinessSection(context),
+
+                    const Divider(height: 24),
+
                     _buildSmartFuelSection(context),
 
                     const Divider(height: 24),
@@ -2832,6 +3397,80 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _OfflineReadinessItemTile extends StatelessWidget {
+  const _OfflineReadinessItemTile({
+    required this.item,
+    required this.icon,
+    required this.statusColor,
+    required this.statusLabel,
+  });
+
+  final OfflineReadinessItem item;
+  final IconData icon;
+  final Color statusColor;
+  final String statusLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: statusColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        item.displayTitle,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ),
+                    if (item.isRequired) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        'Bắt buộc',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (item.description != null &&
+                    item.description!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    item.description!,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            statusLabel,
+            textAlign: TextAlign.right,
+            style: TextStyle(
+              color: statusColor,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
