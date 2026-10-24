@@ -8,6 +8,8 @@ import '../../../map/data/route_providers.dart';
 import '../../../map/domain/along_route_place.dart';
 import '../../../map/domain/route_result.dart';
 import '../../../vehicle/data/vehicle_repository.dart';
+import '../../data/connectivity_risk_providers.dart';
+import '../../data/connectivity_risk_service.dart';
 import '../../data/fuel_price_repository.dart';
 import '../../data/smart_fuel_station_searcher.dart';
 import '../../data/smart_rest_place_searcher.dart';
@@ -16,6 +18,7 @@ import '../../data/trip_budget_repository.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
+import '../../domain/connectivity_risk.dart';
 import '../../domain/fuel_range_calculator.dart';
 import '../../domain/rest_policy_calculator.dart';
 import '../../domain/smart_fuel_stop_recommender.dart';
@@ -25,6 +28,7 @@ import '../../domain/trip_budget_calculator.dart';
 import '../../domain/trip_cost_estimator.dart';
 import '../../domain/trip_fuel_estimator.dart';
 import '../../domain/trip_route_points.dart';
+import '../connectivity_risk_map_segments.dart';
 
 class TripRoutePage extends ConsumerStatefulWidget {
   const TripRoutePage({required this.tripId, super.key});
@@ -64,6 +68,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
   SmartRestPlan? _smartRestPlan;
   String? _smartRestSearchWarning;
+
+  ConnectivityRiskAnalysisSummary? _connectivityRiskSummary;
+  bool _isAnalyzingConnectivityRisk = false;
+  String? _connectivityRiskError;
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -115,6 +123,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         _smartRestPlan = null;
         _smartRestSearchWarning = null;
+
+        _connectivityRiskSummary = null;
+        _isAnalyzingConnectivityRisk = false;
+        _connectivityRiskError = null;
 
         _alongRoutePlaces = const [];
         _alongRouteError = null;
@@ -1847,6 +1859,252 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     return '${(meters / 1000).toStringAsFixed(1)} km';
   }
 
+  Future<void> _analyzeConnectivityRisk() async {
+    final route = _route;
+
+    if (route == null || route.points.length < 2) {
+      return;
+    }
+
+    setState(() {
+      _isAnalyzingConnectivityRisk = true;
+      _connectivityRiskError = null;
+    });
+
+    try {
+      final service = ref.read(connectivityRiskServiceProvider);
+
+      final summary = await service.analyzeRoute(
+        routePoints: route.points,
+        routeDistanceMeters: route.distanceMeters.toDouble(),
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _connectivityRiskSummary = summary;
+        _isAnalyzingConnectivityRisk = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _connectivityRiskSummary = null;
+        _isAnalyzingConnectivityRisk = false;
+        _connectivityRiskError = 'Không thể phân tích nguy cơ kết nối.\n$error';
+      });
+    }
+  }
+
+  void _clearConnectivityRisk() {
+    setState(() {
+      _connectivityRiskSummary = null;
+      _connectivityRiskError = null;
+    });
+  }
+
+  Color _connectivityRiskColor(ConnectivityRiskLevel level) {
+    switch (level) {
+      case ConnectivityRiskLevel.unknown:
+        return Colors.blueGrey;
+      case ConnectivityRiskLevel.low:
+        return Colors.green.shade700;
+      case ConnectivityRiskLevel.moderate:
+        return Colors.amber.shade700;
+      case ConnectivityRiskLevel.high:
+        return Colors.deepOrange;
+      case ConnectivityRiskLevel.critical:
+        return Colors.red.shade700;
+    }
+  }
+
+  Widget _buildConnectivityRiskSection(BuildContext context) {
+    final summary = _connectivityRiskSummary;
+    final assessment = summary?.assessment;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.signal_cellular_alt,
+                size: 22,
+                color: assessment == null
+                    ? colorScheme.primary
+                    : _connectivityRiskColor(assessment.overallLevel),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Nguy cơ kết nối dọc tuyến',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              if (summary != null)
+                TextButton(
+                  onPressed: _isAnalyzingConnectivityRisk
+                      ? null
+                      : _clearConnectivityRisk,
+                  child: const Text('Xóa'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Phân tích này hỗ trợ chuẩn bị cho các đoạn đường có nguy cơ '
+            'kết nối kém. Kết quả hiện tại chủ yếu là ước lượng proxy, '
+            'không phải xác nhận vùng mất sóng.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _isAnalyzingConnectivityRisk
+                  ? null
+                  : _analyzeConnectivityRisk,
+              icon: _isAnalyzingConnectivityRisk
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.radar),
+              label: Text(
+                _isAnalyzingConnectivityRisk
+                    ? 'Đang phân tích nguy cơ...'
+                    : summary == null
+                    ? 'Phân tích nguy cơ kết nối'
+                    : 'Phân tích lại',
+              ),
+            ),
+          ),
+          if (_connectivityRiskError != null) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.warning_amber_outlined,
+                  size: 20,
+                  color: colorScheme.error,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _connectivityRiskError!,
+                    style: TextStyle(color: colorScheme.error),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (summary != null) ...[
+            const SizedBox(height: 10),
+            _SummaryLine(
+              label: 'Chất lượng dữ liệu',
+              value: summary.dataQualityLabel,
+            ),
+            _SummaryLine(
+              label: 'Điểm mẫu đánh giá',
+              value:
+                  '${summary.routeAnalysis.scoredPointCount}/'
+                  '${summary.routeAnalysis.sampleCount}',
+            ),
+            if (assessment != null) ...[
+              _SummaryLine(
+                label: 'Mức rủi ro tổng thể',
+                value: assessment.overallLevel.label,
+                emphasis: assessment.overallLevel.requiresWarning,
+              ),
+              _SummaryLine(
+                label: 'Điểm rủi ro',
+                value:
+                    '${(assessment.overallRiskScore * 100).toStringAsFixed(0)}/100',
+                emphasis: assessment.overallLevel.requiresWarning,
+              ),
+              _SummaryLine(
+                label: 'Đoạn cần cảnh báo',
+                value:
+                    '${assessment.warningDistanceKm.toStringAsFixed(1)} km '
+                    '(${assessment.warningRoutePercent.toStringAsFixed(1)}%)',
+                emphasis: assessment.hasWarningSegments,
+              ),
+              if (assessment.highestRiskSegment != null)
+                _SummaryLine(
+                  label: 'Mức cao nhất',
+                  value: assessment.highestRiskSegment!.level.label,
+                  emphasis:
+                      assessment.highestRiskSegment!.level.requiresWarning,
+                ),
+            ],
+            if (summary.routeAnalysis.hasProviderFailures) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Một số nguồn dữ liệu không phản hồi: '
+                '${summary.routeAnalysis.failedProviderIds.join(', ')}.',
+                style: TextStyle(color: colorScheme.error, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              summary.interpretationNotice,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (assessment != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Chú giải tuyến',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  _ConnectivityRiskLegendItem(
+                    color: _connectivityRiskColor(ConnectivityRiskLevel.low),
+                    label: 'Thấp',
+                  ),
+                  _ConnectivityRiskLegendItem(
+                    color: _connectivityRiskColor(
+                      ConnectivityRiskLevel.moderate,
+                    ),
+                    label: 'Trung bình',
+                  ),
+                  _ConnectivityRiskLegendItem(
+                    color: _connectivityRiskColor(ConnectivityRiskLevel.high),
+                    label: 'Cao',
+                  ),
+                  _ConnectivityRiskLegendItem(
+                    color: _connectivityRiskColor(
+                      ConnectivityRiskLevel.critical,
+                    ),
+                    label: 'Rất cao',
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
   void _fitRoute() {
     final route = _route;
 
@@ -2168,6 +2426,27 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       (place) => place.type == AlongRoutePlaceType.medical,
     );
 
+    final connectivityAssessment = _connectivityRiskSummary?.assessment;
+
+    final connectivityRiskMapSegments = connectivityAssessment == null
+        ? const <ConnectivityRiskMapSegment>[]
+        : const ConnectivityRiskMapSegmentBuilder().build(
+            routePoints: route.points,
+            assessment: connectivityAssessment,
+          );
+
+    final connectivityRiskPolylines = connectivityRiskMapSegments
+        .map(
+          (segment) => Polyline(
+            points: segment.points
+                .map((point) => LatLng(point.latitude, point.longitude))
+                .toList(growable: false),
+            strokeWidth: 7,
+            color: _connectivityRiskColor(segment.level),
+          ),
+        )
+        .toList(growable: false);
+
     return Stack(
       children: [
         FlutterMap(
@@ -2191,6 +2470,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                   strokeWidth: 5,
                   color: Theme.of(context).colorScheme.primary,
                 ),
+                ...connectivityRiskPolylines,
               ],
             ),
 
@@ -2333,6 +2613,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                           emphasis: _exceedsBudget,
                         ),
                     ],
+
+                    const Divider(height: 24),
+
+                    _buildConnectivityRiskSection(context),
 
                     const Divider(height: 24),
 
@@ -2547,6 +2831,32 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
             ),
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _ConnectivityRiskLegendItem extends StatelessWidget {
+  const _ConnectivityRiskLegendItem({required this.color, required this.label});
+
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 20,
+          height: 6,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        const SizedBox(width: 5),
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
       ],
     );
   }
