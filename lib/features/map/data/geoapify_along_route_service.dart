@@ -11,18 +11,17 @@ import 'along_route_service.dart';
 class GeoapifyAlongRouteService implements AlongRouteService {
   GeoapifyAlongRouteService(
     this._client, {
-    required this._apiKey,
+    required String apiKey,
     Uri? endpoint,
-  }) : _endpoint = endpoint ?? Uri.parse('https://api.geoapify.com/v2/places');
+  }) : _apiKey = apiKey.trim(),
+       _endpoint = endpoint ?? Uri.parse('https://api.geoapify.com/v2/places');
 
   final http.Client _client;
   final String _apiKey;
   final Uri _endpoint;
 
-  static const Duration _requestTimeout = Duration(seconds: 30);
-
+  static const Duration _timeout = Duration(seconds: 30);
   static const double _earthRadiusMeters = 6371000;
-
   static const int _maximumQueryPoints = 1500;
 
   @override
@@ -38,7 +37,7 @@ class GeoapifyAlongRouteService implements AlongRouteService {
     double searchRadiusMeters = 3000,
     int maxResults = 50,
   }) async {
-    if (routePoints.isEmpty || types.isEmpty || maxResults <= 0) {
+    if (routePoints.length < 2 || types.isEmpty || maxResults <= 0) {
       return const AlongRouteResult(
         places: [],
         provider: 'geoapify',
@@ -46,21 +45,15 @@ class GeoapifyAlongRouteService implements AlongRouteService {
       );
     }
 
-    if (_apiKey.trim().isEmpty) {
-      throw const GeoapifyAlongRouteException(
-        'Geoapify API key chưa được cấu hình.',
+    if (_apiKey.isEmpty) {
+      throw StateError(
+        'Thiếu GEOAPIFY_API_KEY. Hãy chạy ứng dụng với --dart-define=GEOAPIFY_API_KEY=...',
       );
     }
 
     final radius = searchRadiusMeters.clamp(100.0, 100000.0).toDouble();
-
-    final resultLimit = maxResults.clamp(1, 500).toInt();
-
-    final queryPoints = _sampleRoutePoints(
-      routePoints,
-      maxPoints: _maximumQueryPoints,
-    );
-
+    final limit = maxResults.clamp(1, 500).toInt();
+    final sampledRoute = _sampleRoutePoints(routePoints);
     final selectedTypes = AlongRoutePlaceType.values
         .where(types.contains)
         .toList(growable: false);
@@ -69,52 +62,68 @@ class GeoapifyAlongRouteService implements AlongRouteService {
       return AlongRouteResult(
         places: const [],
         provider: 'geoapify',
-        searchedPointCount: queryPoints.length,
+        searchedPointCount: sampledRoute.length,
       );
     }
 
-    final quotas = _buildTypeQuotas(
-      selectedTypes: selectedTypes,
-      maxResults: resultLimit,
-    );
-
     final deduplicated = <String, AlongRoutePlace>{};
+    final baseQuota = limit ~/ selectedTypes.length;
+    var remainder = limit % selectedTypes.length;
 
     for (final type in selectedTypes) {
-      final typeLimit = quotas[type] ?? 0;
+      final typeQuota = math
+          .max(1, baseQuota + (remainder > 0 ? 1 : 0))
+          .toInt();
+      if (remainder > 0) {
+        remainder--;
+      }
 
-      if (typeLimit <= 0) {
+      final batches = _categoryBatchesForType(type);
+      if (batches.isEmpty) {
         continue;
       }
 
-      final places = await _searchType(
-        type: type,
-        routePoints: routePoints,
-        queryPoints: queryPoints,
-        searchRadiusMeters: radius,
-        maxResults: typeLimit,
-      );
+      final batchBaseQuota = typeQuota ~/ batches.length;
+      var batchRemainder = typeQuota % batches.length;
 
-      for (final place in places) {
-        final existing = deduplicated[place.sourceId];
-
-        if (existing == null) {
-          deduplicated[place.sourceId] = place;
-          continue;
+      for (final categories in batches) {
+        final batchQuota = math
+            .max(1, batchBaseQuota + (batchRemainder > 0 ? 1 : 0))
+            .toInt();
+        if (batchRemainder > 0) {
+          batchRemainder--;
         }
 
-        final existingDistance =
-            existing.distanceFromRouteMeters ?? double.infinity;
+        final places = await _searchCategoryBatch(
+          routePoints: sampledRoute,
+          fullRoutePoints: routePoints,
+          type: type,
+          categories: categories,
+          searchRadiusMeters: radius,
+          maxResults: batchQuota,
+        );
 
-        final newDistance = place.distanceFromRouteMeters ?? double.infinity;
+        for (final place in places) {
+          final key = '${place.source}:${place.sourceId}';
+          final existing = deduplicated[key];
 
-        if (newDistance < existingDistance) {
-          deduplicated[place.sourceId] = place;
+          if (existing == null) {
+            deduplicated[key] = place;
+            continue;
+          }
+
+          final existingDistance =
+              existing.distanceFromRouteMeters ?? double.infinity;
+          final newDistance = place.distanceFromRouteMeters ?? double.infinity;
+
+          if (newDistance < existingDistance) {
+            deduplicated[key] = place;
+          }
         }
       }
     }
 
-    final places = deduplicated.values.toList()
+    final places = deduplicated.values.toList(growable: false)
       ..sort((a, b) {
         final distanceCompare = (a.distanceFromRouteMeters ?? double.infinity)
             .compareTo(b.distanceFromRouteMeters ?? double.infinity);
@@ -127,269 +136,237 @@ class GeoapifyAlongRouteService implements AlongRouteService {
       });
 
     return AlongRouteResult(
-      places: List<AlongRoutePlace>.unmodifiable(places.take(resultLimit)),
+      places: List<AlongRoutePlace>.unmodifiable(places.take(limit)),
       provider: 'geoapify',
-      searchedPointCount: queryPoints.length,
+      searchedPointCount: sampledRoute.length,
     );
   }
 
-  Map<AlongRoutePlaceType, int> _buildTypeQuotas({
-    required List<AlongRoutePlaceType> selectedTypes,
-    required int maxResults,
-  }) {
-    final quotas = <AlongRoutePlaceType, int>{};
-
-    if (selectedTypes.isEmpty || maxResults <= 0) {
-      return quotas;
-    }
-
-    final baseQuota = maxResults ~/ selectedTypes.length;
-    final remainder = maxResults % selectedTypes.length;
-
-    for (var i = 0; i < selectedTypes.length; i++) {
-      quotas[selectedTypes[i]] = baseQuota + (i < remainder ? 1 : 0);
-    }
-
-    return quotas;
-  }
-
-  Future<List<AlongRoutePlace>> _searchType({
-    required AlongRoutePlaceType type,
+  Future<List<AlongRoutePlace>> _searchCategoryBatch({
     required List<RoutePoint> routePoints,
-    required List<RoutePoint> queryPoints,
+    required List<RoutePoint> fullRoutePoints,
+    required AlongRoutePlaceType type,
+    required List<String> categories,
     required double searchRadiusMeters,
     required int maxResults,
   }) async {
-    final categories = _categoriesForType(type);
-
-    if (categories.isEmpty || maxResults <= 0) {
-      return const [];
-    }
+    final coordinates = routePoints
+        .map((point) => [point.longitude, point.latitude])
+        .toList(growable: false);
 
     final body = <String, dynamic>{
       'categories': categories,
       'filter': {
         'type': 'polyline',
-        'geometry': {
-          'type': 'LineString',
-          'coordinates': queryPoints
-              .map((point) => [point.longitude, point.latitude])
-              .toList(),
-        },
+        'geometry': {'type': 'LineString', 'coordinates': coordinates},
         'buffer': searchRadiusMeters.round(),
       },
-      'limit': maxResults,
+      'limit': maxResults.clamp(1, 500),
       'offset': 0,
       'lang': 'vi',
     };
 
-    try {
-      final response = await _client
-          .post(
-            _endpoint,
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-              'x-api-key': _apiKey,
-              'User-Agent':
-                  'PhuotThu/0.1 '
-                  '(com.anhleduc333.phuotthu)',
-            },
-            body: jsonEncode(body),
-          )
-          .timeout(_requestTimeout);
+    final response = await _client
+        .post(
+          _endpoint,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'x-api-key': _apiKey,
+            'User-Agent': 'PhuotThu/1.0',
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(_timeout);
 
-      if (response.statusCode != 200) {
-        throw GeoapifyAlongRouteException(
-          _httpErrorMessage(response.statusCode),
-          statusCode: response.statusCode,
-        );
-      }
-
-      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-
-      if (decoded is! Map<String, dynamic>) {
-        throw const GeoapifyAlongRouteException(
-          'Geoapify trả về dữ liệu không hợp lệ.',
-        );
-      }
-
-      final rawFeatures = decoded['features'];
-
-      if (rawFeatures is! List) {
-        return const [];
-      }
-
-      final places = <AlongRoutePlace>[];
-      final seenPlaceIds = <String>{};
-
-      for (final rawFeature in rawFeatures) {
-        if (rawFeature is! Map) {
-          continue;
-        }
-
-        final feature = Map<String, dynamic>.from(rawFeature);
-
-        final place = _parseFeature(feature, requestedType: type);
-
-        if (place == null) {
-          continue;
-        }
-
-        if (!seenPlaceIds.add(place.sourceId)) {
-          continue;
-        }
-
-        final distanceFromRoute = _distanceToRouteMeters(
-          latitude: place.latitude,
-          longitude: place.longitude,
-          routePoints: routePoints,
-        );
-
-        if (distanceFromRoute > searchRadiusMeters + 10) {
-          continue;
-        }
-
-        places.add(place.copyWith(distanceFromRouteMeters: distanceFromRoute));
-      }
-
-      places.sort((a, b) {
-        final distanceCompare = (a.distanceFromRouteMeters ?? double.infinity)
-            .compareTo(b.distanceFromRouteMeters ?? double.infinity);
-
-        if (distanceCompare != 0) {
-          return distanceCompare;
-        }
-
-        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      });
-
-      return List<AlongRoutePlace>.unmodifiable(places.take(maxResults));
-    } on GeoapifyAlongRouteException {
-      rethrow;
-    } on FormatException catch (error) {
-      throw GeoapifyAlongRouteException(
-        'Không thể đọc dữ liệu Geoapify cho '
-        '${type.label}: ${error.message}',
-      );
-    } catch (error) {
-      throw GeoapifyAlongRouteException(
-        'Không thể tìm ${type.label.toLowerCase()} '
-        'dọc tuyến: $error',
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        'Geoapify Places API lỗi HTTP ${response.statusCode}: ${response.body}',
       );
     }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Geoapify trả về dữ liệu không hợp lệ.');
+    }
+
+    final features = decoded['features'];
+    if (features is! List) {
+      return const [];
+    }
+
+    final places = <AlongRoutePlace>[];
+
+    for (final rawFeature in features) {
+      if (rawFeature is! Map) {
+        continue;
+      }
+
+      final feature = Map<String, dynamic>.from(rawFeature);
+      final place = _parseFeature(feature, type);
+      if (place == null) {
+        continue;
+      }
+
+      final distanceFromRouteMeters = _distanceToRouteMeters(
+        latitude: place.latitude,
+        longitude: place.longitude,
+        routePoints: fullRoutePoints,
+      );
+
+      if (distanceFromRouteMeters > searchRadiusMeters + 10) {
+        continue;
+      }
+
+      places.add(
+        place.copyWith(distanceFromRouteMeters: distanceFromRouteMeters),
+      );
+    }
+
+    return places;
   }
 
-  List<String> _categoriesForType(AlongRoutePlaceType type) {
+  List<List<String>> _categoryBatchesForType(AlongRoutePlaceType type) {
     switch (type) {
       case AlongRoutePlaceType.fuel:
-        return const ['service.vehicle.fuel'];
+        return const [
+          ['service.vehicle.fuel'],
+        ];
 
       case AlongRoutePlaceType.restArea:
-        return const ['leisure.picnic'];
+        // "Nghỉ / lưu trú" trong PhuotThu là nơi ngủ nghỉ thực tế,
+        // không còn dùng leisure.picnic.
+        return const [
+          [
+            'accommodation.hotel',
+            'accommodation.guest_house',
+            'accommodation.motel',
+            'accommodation.hostel',
+          ],
+        ];
 
       case AlongRoutePlaceType.food:
+        // Tách ăn và uống thành hai batch để tránh một nhóm dày đặc
+        // lấn át hoàn toàn nhóm còn lại trong giới hạn kết quả.
         return const [
-          'catering.restaurant',
-          'catering.cafe',
-          'catering.fast_food',
-          'catering.food_court',
+          ['catering.restaurant', 'catering.fast_food', 'catering.food_court'],
+          [
+            'catering.cafe',
+            'catering.bar',
+            'catering.pub',
+            'catering.biergarten',
+          ],
         ];
 
       case AlongRoutePlaceType.repair:
-        return const ['service.vehicle.repair'];
+        return const [
+          ['service.vehicle.repair'],
+        ];
 
       case AlongRoutePlaceType.medical:
-        return const ['healthcare.hospital', 'healthcare.clinic_or_praxis'];
+        return const [
+          ['healthcare.hospital', 'healthcare.clinic_or_praxis'],
+        ];
     }
   }
 
   AlongRoutePlace? _parseFeature(
-    Map<String, dynamic> feature, {
-    required AlongRoutePlaceType requestedType,
-  }) {
-    final rawProperties = feature['properties'];
+    Map<String, dynamic> feature,
+    AlongRoutePlaceType type,
+  ) {
+    final geometry = feature['geometry'];
+    final properties = feature['properties'];
 
-    if (rawProperties is! Map) {
+    if (geometry is! Map || properties is! Map) {
       return null;
     }
 
-    final properties = Map<String, dynamic>.from(rawProperties);
+    final geometryMap = Map<String, dynamic>.from(geometry);
+    final propertiesMap = Map<String, dynamic>.from(properties);
+    final coordinates = geometryMap['coordinates'];
 
-    final categories = _stringList(properties['categories']);
-
-    if (!_matchesRequestedType(categories: categories, type: requestedType)) {
+    if (coordinates is! List || coordinates.length < 2) {
       return null;
     }
 
-    final latitude = _toDouble(properties['lat']);
+    final longitude = _toDouble(coordinates[0]);
+    final latitude = _toDouble(coordinates[1]);
 
-    final longitude = _toDouble(properties['lon']);
-
-    final coordinates = _geometryCoordinates(feature['geometry']);
-
-    final resolvedLatitude = latitude ?? coordinates?.$2;
-
-    final resolvedLongitude = longitude ?? coordinates?.$1;
-
-    if (resolvedLatitude == null || resolvedLongitude == null) {
+    if (latitude == null ||
+        longitude == null ||
+        !_isValidCoordinate(latitude, longitude)) {
       return null;
     }
 
-    final placeId = _stringValue(properties['place_id']);
+    final sourceId = _firstNonEmpty([
+      _stringValue(propertiesMap['place_id']),
+      _stringValue(feature['id']),
+      '${latitude.toStringAsFixed(6)},${longitude.toStringAsFixed(6)}',
+    ])!;
 
-    final fallbackId =
-        '${resolvedLatitude.toStringAsFixed(6)},'
-        '${resolvedLongitude.toStringAsFixed(6)},'
-        '${requestedType.key}';
+    final name = _firstNonEmpty([
+      _stringValue(propertiesMap['name']),
+      _stringValue(propertiesMap['address_line1']),
+      _stringValue(propertiesMap['formatted']),
+      _fallbackName(type),
+    ])!;
 
-    final sourceId = placeId ?? fallbackId;
-
-    final name =
-        _firstNonEmpty([
-          _stringValue(properties['name']),
-          _stringValue(properties['address_line1']),
-        ]) ??
-        requestedType.label;
+    final categories = _stringList(propertiesMap['categories']);
+    final datasource = propertiesMap['datasource'];
+    final datasourceMap = datasource is Map
+        ? Map<String, dynamic>.from(datasource)
+        : const <String, dynamic>{};
+    final raw = datasourceMap['raw'];
+    final rawMap = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : const <String, dynamic>{};
 
     final address = _firstNonEmpty([
-      _stringValue(properties['formatted']),
-      _combineAddressLines(properties),
+      _stringValue(propertiesMap['formatted']),
+      _stringValue(propertiesMap['address_line2']),
     ]);
 
-    final contact = _mapValue(properties['contact']);
+    final openingHours = _firstNonEmpty([
+      _stringValue(propertiesMap['opening_hours']),
+      _stringValue(rawMap['opening_hours']),
+    ]);
 
     final phone = _firstNonEmpty([
-      _stringValue(contact?['phone']),
-      _stringValue(properties['phone']),
+      _stringValue(propertiesMap['phone']),
+      _stringValue(rawMap['phone']),
+      _stringValue(rawMap['contact:phone']),
+      _stringValue(rawMap['mobile']),
     ]);
 
     final website = _firstNonEmpty([
-      _stringValue(properties['website']),
-      _stringValue(contact?['website']),
+      _stringValue(propertiesMap['website']),
+      _stringValue(rawMap['website']),
+      _stringValue(rawMap['contact:website']),
     ]);
 
-    final openingHours = _stringValue(properties['opening_hours']);
-
-    final tags = <String, String>{
-      'provider': 'geoapify',
-      'type': requestedType.key,
-    };
-
+    final tags = <String, String>{};
     if (categories.isNotEmpty) {
       tags['categories'] = categories.join(',');
     }
 
-    if (placeId != null) {
-      tags['place_id'] = placeId;
+    final cuisine = _firstNonEmpty([
+      _stringValue(
+        propertiesMap['catering'] is Map
+            ? (propertiesMap['catering'] as Map)['cuisine']
+            : null,
+      ),
+      _stringValue(rawMap['cuisine']),
+    ]);
+    if (cuisine != null) {
+      tags['cuisine'] = cuisine;
     }
 
     return AlongRoutePlace(
       id: 'geoapify:$sourceId',
       name: name,
-      type: requestedType,
-      latitude: resolvedLatitude,
-      longitude: resolvedLongitude,
+      type: type,
+      latitude: latitude,
+      longitude: longitude,
       source: 'geoapify',
       sourceId: sourceId,
       address: address,
@@ -400,180 +377,30 @@ class GeoapifyAlongRouteService implements AlongRouteService {
     );
   }
 
-  bool _matchesRequestedType({
-    required List<String> categories,
-    required AlongRoutePlaceType type,
-  }) {
-    bool hasCategory(String prefix) {
-      return categories.any(
-        (category) => category == prefix || category.startsWith('$prefix.'),
-      );
-    }
-
-    switch (type) {
-      case AlongRoutePlaceType.fuel:
-        return hasCategory('service.vehicle.fuel');
-
-      case AlongRoutePlaceType.restArea:
-        return hasCategory('leisure.picnic');
-
-      case AlongRoutePlaceType.food:
-        return hasCategory('catering');
-
-      case AlongRoutePlaceType.repair:
-        return hasCategory('service.vehicle.repair');
-
-      case AlongRoutePlaceType.medical:
-        return hasCategory('healthcare');
-    }
-  }
-
-  (double, double)? _geometryCoordinates(dynamic rawGeometry) {
-    if (rawGeometry is! Map) {
-      return null;
-    }
-
-    final geometry = Map<String, dynamic>.from(rawGeometry);
-
-    if (geometry['type'] != 'Point') {
-      return null;
-    }
-
-    final rawCoordinates = geometry['coordinates'];
-
-    if (rawCoordinates is! List || rawCoordinates.length < 2) {
-      return null;
-    }
-
-    final longitude = _toDouble(rawCoordinates[0]);
-
-    final latitude = _toDouble(rawCoordinates[1]);
-
-    if (longitude == null || latitude == null) {
-      return null;
-    }
-
-    return (longitude, latitude);
-  }
-
-  Map<String, dynamic>? _mapValue(dynamic value) {
-    if (value is! Map) {
-      return null;
-    }
-
-    return Map<String, dynamic>.from(value);
-  }
-
-  List<String> _stringList(dynamic value) {
-    if (value is! List) {
-      return const [];
-    }
-
-    return value
-        .map((item) => item.toString())
-        .where((item) => item.trim().isNotEmpty)
-        .toList();
-  }
-
-  String? _combineAddressLines(Map<String, dynamic> properties) {
-    final line1 = _stringValue(properties['address_line1']);
-
-    final line2 = _stringValue(properties['address_line2']);
-
-    final parts = <String>[];
-
-    if (line1 != null) {
-      parts.add(line1);
-    }
-
-    if (line2 != null) {
-      parts.add(line2);
-    }
-
-    if (parts.isEmpty) {
-      return null;
-    }
-
-    return parts.join(', ');
-  }
-
-  String? _stringValue(dynamic value) {
-    if (value == null) {
-      return null;
-    }
-
-    final result = value.toString().trim();
-
-    if (result.isEmpty) {
-      return null;
-    }
-
-    return result;
-  }
-
-  String? _firstNonEmpty(Iterable<String?> values) {
-    for (final value in values) {
-      if (value != null && value.trim().isNotEmpty) {
-        return value.trim();
-      }
-    }
-
-    return null;
-  }
-
-  double? _toDouble(dynamic value) {
-    if (value is num) {
-      return value.toDouble();
-    }
-
-    return double.tryParse(value?.toString() ?? '');
-  }
-
-  List<RoutePoint> _sampleRoutePoints(
-    List<RoutePoint> routePoints, {
-    required int maxPoints,
-  }) {
-    if (routePoints.length <= maxPoints) {
+  List<RoutePoint> _sampleRoutePoints(List<RoutePoint> routePoints) {
+    if (routePoints.length <= _maximumQueryPoints) {
       return List<RoutePoint>.unmodifiable(routePoints);
     }
 
-    if (maxPoints <= 2) {
-      return [routePoints.first, routePoints.last];
-    }
+    final sampled = <RoutePoint>[];
+    final lastIndex = routePoints.length - 1;
 
-    final cumulativeDistances = List<double>.filled(routePoints.length, 0);
+    for (var i = 0; i < _maximumQueryPoints; i++) {
+      final ratio = i / (_maximumQueryPoints - 1);
+      final index = (ratio * lastIndex).round().clamp(0, lastIndex).toInt();
+      final point = routePoints[index];
 
-    for (var i = 1; i < routePoints.length; i++) {
-      cumulativeDistances[i] =
-          cumulativeDistances[i - 1] +
-          _haversineMeters(routePoints[i - 1], routePoints[i]);
-    }
-
-    final totalDistance = cumulativeDistances.last;
-
-    if (totalDistance <= 0) {
-      return [routePoints.first, routePoints.last];
-    }
-
-    final sampled = <RoutePoint>[routePoints.first];
-
-    final targetStep = totalDistance / (maxPoints - 1);
-
-    var nextTarget = targetStep;
-
-    for (
-      var i = 1;
-      i < routePoints.length - 1 && sampled.length < maxPoints - 1;
-      i++
-    ) {
-      if (cumulativeDistances[i] >= nextTarget) {
-        sampled.add(routePoints[i]);
-
-        nextTarget += targetStep;
+      if (sampled.isEmpty ||
+          sampled.last.latitude != point.latitude ||
+          sampled.last.longitude != point.longitude) {
+        sampled.add(point);
       }
     }
 
-    sampled.add(routePoints.last);
+    if (sampled.last.latitude != routePoints.last.latitude ||
+        sampled.last.longitude != routePoints.last.longitude) {
+      sampled.add(routePoints.last);
+    }
 
     return List<RoutePoint>.unmodifiable(sampled);
   }
@@ -588,7 +415,7 @@ class GeoapifyAlongRouteService implements AlongRouteService {
     }
 
     if (routePoints.length == 1) {
-      return _haversineCoordinatesMeters(
+      return _haversineMeters(
         latitude,
         longitude,
         routePoints.first.latitude,
@@ -596,151 +423,161 @@ class GeoapifyAlongRouteService implements AlongRouteService {
       );
     }
 
-    var minimum = double.infinity;
+    var bestDistance = double.infinity;
 
-    for (var i = 1; i < routePoints.length; i++) {
-      final distance = _distanceToSegmentMeters(
+    for (var i = 0; i < routePoints.length - 1; i++) {
+      final start = routePoints[i];
+      final end = routePoints[i + 1];
+
+      final distance = _distancePointToSegmentMeters(
         pointLatitude: latitude,
         pointLongitude: longitude,
-        start: routePoints[i - 1],
-        end: routePoints[i],
+        startLatitude: start.latitude,
+        startLongitude: start.longitude,
+        endLatitude: end.latitude,
+        endLongitude: end.longitude,
       );
 
-      if (distance < minimum) {
-        minimum = distance;
-      }
-
-      if (minimum <= 1) {
-        return minimum;
+      if (distance < bestDistance) {
+        bestDistance = distance;
       }
     }
 
-    return minimum;
+    return bestDistance;
   }
 
-  double _distanceToSegmentMeters({
+  double _distancePointToSegmentMeters({
     required double pointLatitude,
     required double pointLongitude,
-    required RoutePoint start,
-    required RoutePoint end,
+    required double startLatitude,
+    required double startLongitude,
+    required double endLatitude,
+    required double endLongitude,
   }) {
-    final latitudeRadians = _degreesToRadians(pointLatitude);
+    final referenceLatitude =
+        ((pointLatitude + startLatitude + endLatitude) / 3) * math.pi / 180;
 
-    final startX =
+    double x(double longitude) =>
+        longitude *
+        math.pi /
+        180 *
         _earthRadiusMeters *
-        _degreesToRadians(start.longitude - pointLongitude) *
-        math.cos(latitudeRadians);
+        math.cos(referenceLatitude);
+    double y(double latitude) => latitude * math.pi / 180 * _earthRadiusMeters;
 
-    final startY =
-        _earthRadiusMeters * _degreesToRadians(start.latitude - pointLatitude);
+    final px = x(pointLongitude);
+    final py = y(pointLatitude);
+    final ax = x(startLongitude);
+    final ay = y(startLatitude);
+    final bx = x(endLongitude);
+    final by = y(endLatitude);
 
-    final endX =
-        _earthRadiusMeters *
-        _degreesToRadians(end.longitude - pointLongitude) *
-        math.cos(latitudeRadians);
+    final abx = bx - ax;
+    final aby = by - ay;
+    final lengthSquared = abx * abx + aby * aby;
 
-    final endY =
-        _earthRadiusMeters * _degreesToRadians(end.latitude - pointLatitude);
-
-    final segmentX = endX - startX;
-    final segmentY = endY - startY;
-
-    final segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
-
-    if (segmentLengthSquared == 0) {
-      return math.sqrt(startX * startX + startY * startY);
+    if (lengthSquared <= 0) {
+      return math.sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay));
     }
 
-    final projection =
-        (-(startX * segmentX + startY * segmentY) / segmentLengthSquared)
-            .clamp(0.0, 1.0)
-            .toDouble();
+    final projection = (((px - ax) * abx + (py - ay) * aby) / lengthSquared)
+        .clamp(0.0, 1.0);
+    final closestX = ax + projection * abx;
+    final closestY = ay + projection * aby;
 
-    final closestX = startX + projection * segmentX;
-    final closestY = startY + projection * segmentY;
-
-    return math.sqrt(closestX * closestX + closestY * closestY);
-  }
-
-  double _haversineMeters(RoutePoint a, RoutePoint b) {
-    return _haversineCoordinatesMeters(
-      a.latitude,
-      a.longitude,
-      b.latitude,
-      b.longitude,
+    return math.sqrt(
+      (px - closestX) * (px - closestX) + (py - closestY) * (py - closestY),
     );
   }
 
-  double _haversineCoordinatesMeters(
+  double _haversineMeters(
     double latitude1,
     double longitude1,
     double latitude2,
     double longitude2,
   ) {
-    final lat1 = _degreesToRadians(latitude1);
-    final lat2 = _degreesToRadians(latitude2);
+    final lat1 = latitude1 * math.pi / 180;
+    final lat2 = latitude2 * math.pi / 180;
+    final deltaLat = (latitude2 - latitude1) * math.pi / 180;
+    final deltaLon = (longitude2 - longitude1) * math.pi / 180;
 
-    final deltaLatitude = _degreesToRadians(latitude2 - latitude1);
+    final a =
+        math.sin(deltaLat / 2) * math.sin(deltaLat / 2) +
+        math.cos(lat1) *
+            math.cos(lat2) *
+            math.sin(deltaLon / 2) *
+            math.sin(deltaLon / 2);
 
-    final deltaLongitude = _degreesToRadians(longitude2 - longitude1);
-
-    final sinLatitude = math.sin(deltaLatitude / 2);
-
-    final sinLongitude = math.sin(deltaLongitude / 2);
-
-    final haversine =
-        sinLatitude * sinLatitude +
-        math.cos(lat1) * math.cos(lat2) * sinLongitude * sinLongitude;
-
-    final angularDistance =
-        2 * math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine));
-
-    return _earthRadiusMeters * angularDistance;
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return _earthRadiusMeters * c;
   }
 
-  double _degreesToRadians(double degrees) {
-    return degrees * math.pi / 180;
-  }
-
-  String _httpErrorMessage(int statusCode) {
-    switch (statusCode) {
-      case 400:
-        return 'Yêu cầu Geoapify không hợp lệ.';
-
-      case 401:
-      case 403:
-        return 'Geoapify API key không hợp lệ '
-            'hoặc không có quyền truy cập.';
-
-      case 429:
-        return 'Đã vượt giới hạn truy vấn Geoapify. '
-            'Vui lòng thử lại sau.';
-
-      case 500:
-      case 502:
-      case 503:
-      case 504:
-        return 'Geoapify đang tạm thời không phản hồi. '
-            'Vui lòng thử lại sau.';
-
-      default:
-        return 'Geoapify trả về lỗi HTTP $statusCode.';
+  String _fallbackName(AlongRoutePlaceType type) {
+    switch (type) {
+      case AlongRoutePlaceType.fuel:
+        return 'Cây xăng';
+      case AlongRoutePlaceType.restArea:
+        return 'Cơ sở lưu trú';
+      case AlongRoutePlaceType.food:
+        return 'Địa điểm ăn uống';
+      case AlongRoutePlaceType.repair:
+        return 'Điểm sửa chữa';
+      case AlongRoutePlaceType.medical:
+        return 'Cơ sở y tế';
     }
   }
-}
 
-class GeoapifyAlongRouteException implements Exception {
-  const GeoapifyAlongRouteException(this.message, {this.statusCode});
-
-  final String message;
-  final int? statusCode;
-
-  @override
-  String toString() {
-    if (statusCode == null) {
-      return message;
+  List<String> _stringList(dynamic value) {
+    if (value is! List) {
+      return const [];
     }
 
-    return '$message (HTTP $statusCode)';
+    return value
+        .map(_stringValue)
+        .whereType<String>()
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  String? _stringValue(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is String) {
+      final trimmed = value.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
+    return null;
+  }
+
+  String? _firstNonEmpty(List<String?> values) {
+    for (final value in values) {
+      if (value != null && value.trim().isNotEmpty) {
+        return value.trim();
+      }
+    }
+
+    return null;
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    if (value is String) {
+      return double.tryParse(value);
+    }
+
+    return null;
+  }
+
+  bool _isValidCoordinate(double latitude, double longitude) {
+    return latitude >= -90 &&
+        latitude <= 90 &&
+        longitude >= -180 &&
+        longitude <= 180;
   }
 }
