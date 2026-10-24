@@ -9,11 +9,14 @@ import '../../../map/domain/along_route_place.dart';
 import '../../../map/domain/route_result.dart';
 import '../../../vehicle/data/vehicle_repository.dart';
 import '../../data/fuel_price_repository.dart';
+import '../../data/smart_fuel_station_searcher.dart';
 import '../../data/trip_budget_providers.dart';
 import '../../data/trip_budget_repository.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
+import '../../domain/fuel_range_calculator.dart';
+import '../../domain/smart_fuel_stop_recommender.dart';
 import '../../domain/trip.dart';
 import '../../domain/trip_budget_calculator.dart';
 import '../../domain/trip_cost_estimator.dart';
@@ -47,6 +50,11 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   bool _exceedsBudget = false;
 
   String? _estimateMessage;
+
+  FuelRangeEstimate? _fuelRange;
+  SmartFuelPlan? _smartFuelPlan;
+  String? _smartFuelMessage;
+  String? _smartFuelSearchWarning;
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -87,6 +95,11 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         _exceedsBudget = false;
         _estimateMessage = null;
+
+        _fuelRange = null;
+        _smartFuelPlan = null;
+        _smartFuelMessage = null;
+        _smartFuelSearchWarning = null;
 
         _alongRoutePlaces = const [];
         _alongRouteError = null;
@@ -171,6 +184,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         if (mounted) {
           setState(() {
             _estimateMessage = 'Chuyến đi chưa chọn phương tiện.';
+            _fuelRange = null;
+            _smartFuelPlan = null;
+            _smartFuelMessage =
+                'Smart Fuel Stop cần một phương tiện có dữ liệu nhiên liệu.';
           });
         }
 
@@ -199,10 +216,39 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                 'Xe điện hiện chưa có dữ liệu '
                 'tiêu thụ kWh/100 km để tính '
                 'năng lượng và chi phí.';
+            _fuelRange = null;
+            _smartFuelPlan = null;
+            _smartFuelMessage = 'Smart Fuel Stop hiện chỉ áp dụng cho phương tiện dùng nhiên liệu lỏng.';
           });
         }
 
         return;
+      }
+
+      const fuelRangeCalculator = FuelRangeCalculator();
+
+      final fuelRange = fuelRangeCalculator.calculate(
+        tankCapacityLiters: vehicle.fuelTankCapacityL,
+        consumptionLitersPer100Km: vehicle.consumptionLPer100Km,
+        startingFuelRatio: 1,
+        reserveRatio: 0.25,
+      );
+
+      final baseSmartFuelPlan = _buildSmartFuelPlan(
+        route: route,
+        fuelRange: fuelRange,
+        places: const [],
+      );
+
+      if (mounted) {
+        setState(() {
+          _fuelRange = fuelRange;
+          _smartFuelPlan = baseSmartFuelPlan;
+          _smartFuelSearchWarning = null;
+          _smartFuelMessage = fuelRange == null
+              ? 'Cần khai báo dung tích bình và mức tiêu hao hợp lệ để gợi ý điểm đổ xăng.'
+              : null;
+        });
       }
 
       const fuelEstimator = TripFuelEstimator();
@@ -413,6 +459,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       _isSearchingAlongRoute = true;
       _alongRouteError = null;
       _hasSearchedAlongRoute = false;
+      _smartFuelSearchWarning = null;
     });
 
     try {
@@ -425,12 +472,60 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         maxResults: 50,
       );
 
+      var smartFuelCandidates = result.places
+          .where((place) => place.type == AlongRoutePlaceType.fuel)
+          .toList(growable: false);
+
+      String? smartFuelSearchWarning;
+
+      final fuelRange = _fuelRange;
+
+      if (fuelRange != null &&
+          fuelRange.needsFuelStopForDistanceMeters(route.distanceMeters) &&
+          _selectedAlongRouteTypes.contains(AlongRoutePlaceType.fuel)) {
+        const stationSearcher = SmartFuelStationSearcher();
+
+        final coverageResult = await stationSearcher.search(
+          service: service,
+          routePoints: route.points,
+          safeRangeMeters: fuelRange.safeRangeMeters,
+          searchRadiusMeters: 2000,
+          maxResultsPerSegment: 20,
+        );
+
+        smartFuelCandidates = _mergeFuelCandidates(
+          smartFuelCandidates,
+          coverageResult.places,
+        );
+
+        if (coverageResult.allSegmentsFailed) {
+          smartFuelSearchWarning =
+              'Không thể mở rộng dữ liệu cây xăng theo từng đoạn; '
+              'gợi ý đang dùng các kết quả hiện có.';
+        } else if (coverageResult.hasPartialFailures) {
+          smartFuelSearchWarning =
+              'Đã lấy dữ liệu cây xăng ở '
+              '${coverageResult.successfulSegments}/'
+              '${coverageResult.segmentCount} đoạn tuyến; '
+              '${coverageResult.failedSegments} đoạn chưa tải được. '
+              'Gợi ý có thể chưa đầy đủ.';
+        }
+      }
+
+      final smartFuelPlan = _buildSmartFuelPlan(
+        route: route,
+        fuelRange: fuelRange,
+        places: smartFuelCandidates,
+      );
+
       if (!mounted) {
         return;
       }
 
       setState(() {
         _alongRoutePlaces = result.places;
+        _smartFuelPlan = smartFuelPlan;
+        _smartFuelSearchWarning = smartFuelSearchWarning;
 
         _isSearchingAlongRoute = false;
         _hasSearchedAlongRoute = true;
@@ -444,6 +539,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         _alongRoutePlaces = const [];
         _isSearchingAlongRoute = false;
         _hasSearchedAlongRoute = true;
+        _smartFuelSearchWarning = null;
         _alongRouteError =
             'Không thể tìm dịch vụ dọc tuyến.\n'
             '$error';
@@ -452,10 +548,22 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   }
 
   void _clearAlongRoutePlaces() {
+    final route = _route;
+
+    final smartFuelPlan = route == null
+        ? null
+        : _buildSmartFuelPlan(
+            route: route,
+            fuelRange: _fuelRange,
+            places: const [],
+          );
+
     setState(() {
       _alongRoutePlaces = const [];
       _hasSearchedAlongRoute = false;
       _alongRouteError = null;
+      _smartFuelPlan = smartFuelPlan;
+      _smartFuelSearchWarning = null;
     });
   }
 
@@ -469,6 +577,184 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
       _alongRouteError = null;
     });
+  }
+
+  List<AlongRoutePlace> _mergeFuelCandidates(
+    List<AlongRoutePlace> first,
+    List<AlongRoutePlace> second,
+  ) {
+    final deduplicated = <String, AlongRoutePlace>{};
+
+    for (final place in [...first, ...second]) {
+      if (place.type != AlongRoutePlaceType.fuel) {
+        continue;
+      }
+
+      final key = '${place.source}:${place.sourceId}';
+      final existing = deduplicated[key];
+
+      if (existing == null) {
+        deduplicated[key] = place;
+        continue;
+      }
+
+      final existingDistance =
+          existing.distanceFromRouteMeters ?? double.infinity;
+      final newDistance = place.distanceFromRouteMeters ?? double.infinity;
+
+      if (newDistance < existingDistance) {
+        deduplicated[key] = place;
+      }
+    }
+
+    return List<AlongRoutePlace>.unmodifiable(deduplicated.values);
+  }
+
+  SmartFuelPlan? _buildSmartFuelPlan({
+    required RouteResult route,
+    required FuelRangeEstimate? fuelRange,
+    required List<AlongRoutePlace> places,
+  }) {
+    if (fuelRange == null || route.points.length < 2) {
+      return null;
+    }
+
+    const recommender = SmartFuelStopRecommender();
+
+    return recommender.recommend(
+      routePoints: route.points,
+      places: places,
+      fuelRange: fuelRange,
+      maxCorridorMeters: 2000,
+    );
+  }
+
+  void _focusSmartFuelStop(SmartFuelStopRecommendation recommendation) {
+    _mapController.move(
+      LatLng(recommendation.place.latitude, recommendation.place.longitude),
+      15.5,
+    );
+  }
+
+  void _showSmartFuelStop(
+    BuildContext context,
+    SmartFuelStopRecommendation recommendation,
+  ) {
+    final place = recommendation.place;
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (bottomSheetContext) {
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: Colors.green.shade700,
+                      foregroundColor: Colors.white,
+                      child: const Icon(Icons.local_gas_station),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            place.name,
+                            style: Theme.of(bottomSheetContext)
+                                .textTheme
+                                .titleLarge,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Gợi ý đổ xăng · Điểm dừng ${recommendation.stopNumber}',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _PlaceDetailRow(
+                  icon: Icons.flag_outlined,
+                  label: 'Vị trí',
+                  value:
+                      'Km ${recommendation.progress.distanceFromStartKm.toStringAsFixed(1)} của hành trình',
+                ),
+                _PlaceDetailRow(
+                  icon: Icons.route_outlined,
+                  label: 'Cách tuyến',
+                  value: _formatDistanceFromRoute(
+                    recommendation.progress.distanceFromRouteMeters,
+                  ),
+                ),
+                _PlaceDetailRow(
+                  icon: Icons.shield_outlined,
+                  label: 'Biên an toàn',
+                  value: _formatDistanceFromRoute(
+                    recommendation.marginBeforeSafeLimitMeters,
+                  ),
+                ),
+                _PlaceDetailRow(
+                  icon: Icons.straighten,
+                  label: 'Từ điểm trước',
+                  value: _formatDistanceFromRoute(
+                    recommendation.distanceSincePreviousStopMeters,
+                  ),
+                ),
+                if (place.address != null)
+                  _PlaceDetailRow(
+                    icon: Icons.location_on_outlined,
+                    label: 'Địa chỉ',
+                    value: place.address!,
+                  ),
+                if (place.openingHours != null)
+                  _PlaceDetailRow(
+                    icon: Icons.schedule_outlined,
+                    label: 'Giờ mở cửa',
+                    value: place.openingHours!,
+                  ),
+                if (place.phone != null)
+                  _PlaceDetailRow(
+                    icon: Icons.phone_outlined,
+                    label: 'Điện thoại',
+                    value: place.phone!,
+                  ),
+                if (place.website != null)
+                  _PlaceDetailRow(
+                    icon: Icons.language_outlined,
+                    label: 'Website',
+                    value: place.website!,
+                  ),
+                _PlaceDetailRow(
+                  icon: Icons.map_outlined,
+                  label: 'Tọa độ',
+                  value:
+                      '${place.latitude.toStringAsFixed(6)}, '
+                      '${place.longitude.toStringAsFixed(6)}',
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Khuyến nghị dựa trên giả định xuất phát đầy bình và giữ 25% nhiên liệu dự phòng.',
+                  style: Theme.of(bottomSheetContext).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Dữ liệu địa điểm: ${_alongRouteSourceLabel(place.source)}.',
+                  style: Theme.of(bottomSheetContext).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _showAlongRoutePlace(BuildContext context, AlongRoutePlace place) {
@@ -563,6 +849,135 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildSmartFuelSection(BuildContext context) {
+    final fuelRange = _fuelRange;
+    final plan = _smartFuelPlan;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    if (fuelRange == null) {
+      if (_smartFuelMessage == null) {
+        return const SizedBox.shrink();
+      }
+
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.local_gas_station_outlined, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _smartFuelMessage!,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.local_gas_station,
+                size: 22,
+                color: Colors.green.shade700,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Gợi ý đổ xăng thông minh',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _SummaryLine(
+            label: 'Tầm hoạt động an toàn',
+            value: _formatDistanceFromRoute(fuelRange.safeRangeMeters),
+          ),
+          _SummaryLine(
+            label: 'Nhiên liệu dự phòng',
+            value: '${(fuelRange.reserveRatio * 100).round()}%',
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Giả định xuất phát đầy bình; ngưỡng dự phòng dùng để chủ động tìm điểm đổ xăng trước khi nhiên liệu xuống thấp.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          if (plan != null) ...[
+            const SizedBox(height: 10),
+            if (!plan.fuelStopRequired)
+              _SmartFuelStatus(
+                icon: Icons.check_circle_outline,
+                color: Colors.green.shade700,
+                text: 'Tuyến hiện tại nằm trong tầm hoạt động an toàn. Chưa cần dừng đổ xăng.',
+              )
+            else ...[
+              if (plan.routeFullyCovered)
+                _SmartFuelStatus(
+                  icon: Icons.route_outlined,
+                  color: Colors.green.shade700,
+                  text:
+                      'Đề xuất ${plan.recommendations.length} điểm dừng để duy trì ngưỡng nhiên liệu an toàn.',
+                )
+              else
+                _SmartFuelStatus(
+                  icon: Icons.warning_amber_outlined,
+                  color: colorScheme.error,
+                  text:
+                      _selectedAlongRouteTypes.contains(
+                        AlongRoutePlaceType.fuel,
+                      )
+                      ? (_hasSearchedAlongRoute
+                            ? 'Các cây xăng tìm được chưa đủ để phủ toàn bộ tuyến trong ngưỡng an toàn.'
+                            : 'Tuyến vượt tầm hoạt động an toàn. Hãy tìm dịch vụ dọc tuyến để PhuotThu chọn điểm đổ xăng.')
+                      : 'Tuyến vượt tầm hoạt động an toàn. Hãy bật bộ lọc Cây xăng và tìm lại dịch vụ dọc tuyến.',
+                ),
+              if (plan.recommendations.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ...plan.recommendations.map(
+                  (recommendation) => _SmartFuelStopTile(
+                    recommendation: recommendation,
+                    onTap: () {
+                      _focusSmartFuelStop(recommendation);
+                      _showSmartFuelStop(context, recommendation);
+                    },
+                  ),
+                ),
+              ],
+            ],
+          ],
+          if (_smartFuelSearchWarning != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _smartFuelSearchWarning!,
+              style: TextStyle(color: colorScheme.error, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -794,19 +1209,46 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       },
     );
 
-    final alongRouteMarkers = _alongRoutePlaces.map((place) {
+    final smartFuelRecommendations =
+        _smartFuelPlan?.recommendations ??
+        const <SmartFuelStopRecommendation>[];
+
+    final recommendedFuelSourceIds = smartFuelRecommendations
+        .map((recommendation) => recommendation.place.sourceId)
+        .toSet();
+
+    final alongRouteMarkers = _alongRoutePlaces
+        .where((place) => !recommendedFuelSourceIds.contains(place.sourceId))
+        .map((place) {
+          return Marker(
+            point: LatLng(place.latitude, place.longitude),
+            width: 42,
+            height: 42,
+            child: GestureDetector(
+              onTap: () {
+                _showAlongRoutePlace(context, place);
+              },
+              child: _AlongRouteMarker(
+                icon: _alongRouteIcon(place.type),
+                color: _alongRouteColor(place.type),
+              ),
+            ),
+          );
+        });
+
+    final smartFuelMarkers = smartFuelRecommendations.map((recommendation) {
+      final place = recommendation.place;
+
       return Marker(
         point: LatLng(place.latitude, place.longitude),
-        width: 42,
-        height: 42,
+        width: 54,
+        height: 54,
         child: GestureDetector(
           onTap: () {
-            _showAlongRoutePlace(context, place);
+            _focusSmartFuelStop(recommendation);
+            _showSmartFuelStop(context, recommendation);
           },
-          child: _AlongRouteMarker(
-            icon: _alongRouteIcon(place.type),
-            color: _alongRouteColor(place.type),
-          ),
+          child: _SmartFuelMarker(stopNumber: recommendation.stopNumber),
         ),
       );
     });
@@ -844,6 +1286,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
             MarkerLayer(
               markers: [
                 ...alongRouteMarkers,
+                ...smartFuelMarkers,
 
                 Marker(
                   point: startPoint,
@@ -980,6 +1423,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
                     const Divider(height: 24),
 
+                    _buildSmartFuelSection(context),
+
+                    const Divider(height: 24),
+
                     Row(
                       children: [
                         const Icon(Icons.travel_explore_outlined, size: 22),
@@ -1066,7 +1513,8 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                         ],
                       ),
 
-                      if (displayedAlongRouteTypes.isNotEmpty) ...[
+                      if (displayedAlongRouteTypes.isNotEmpty ||
+                          smartFuelRecommendations.isNotEmpty) ...[
                         const SizedBox(height: 6),
                         Text(
                           'Chú giải marker',
@@ -1076,13 +1524,21 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                         Wrap(
                           spacing: 10,
                           runSpacing: 8,
-                          children: displayedAlongRouteTypes.map((type) {
-                            return _AlongRouteLegendItem(
-                              icon: _alongRouteIcon(type),
-                              color: _alongRouteColor(type),
-                              label: type.label,
-                            );
-                          }).toList(),
+                          children: [
+                            ...displayedAlongRouteTypes.map((type) {
+                              return _AlongRouteLegendItem(
+                                icon: _alongRouteIcon(type),
+                                color: _alongRouteColor(type),
+                                label: type.label,
+                              );
+                            }),
+                            if (smartFuelRecommendations.isNotEmpty)
+                              _AlongRouteLegendItem(
+                                icon: Icons.local_gas_station,
+                                color: Colors.green.shade700,
+                                label: 'Gợi ý đổ xăng',
+                              ),
+                          ],
                         ),
                         const SizedBox(height: 6),
                         Text(
@@ -1203,6 +1659,127 @@ class _AlongRouteMarker extends StatelessWidget {
         width: 38,
         height: 38,
         child: Icon(icon, size: 21, color: Colors.white),
+      ),
+    );
+  }
+}
+
+class _SmartFuelMarker extends StatelessWidget {
+  const _SmartFuelMarker({required this.stopNumber});
+
+  final int stopNumber;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Material(
+          elevation: 8,
+          color: Colors.green.shade700,
+          shape: const CircleBorder(
+            side: BorderSide(color: Colors.white, width: 3),
+          ),
+          child: const SizedBox(
+            width: 46,
+            height: 46,
+            child: Icon(Icons.local_gas_station, size: 24, color: Colors.white),
+          ),
+        ),
+        Positioned(
+          right: -2,
+          top: -4,
+          child: Container(
+            width: 20,
+            height: 20,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.green.shade700, width: 2),
+            ),
+            child: Text(
+              '$stopNumber',
+              style: TextStyle(
+                color: Colors.green.shade700,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SmartFuelStatus extends StatelessWidget {
+  const _SmartFuelStatus({
+    required this.icon,
+    required this.color,
+    required this.text,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: color),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(text, style: Theme.of(context).textTheme.bodySmall),
+        ),
+      ],
+    );
+  }
+}
+
+class _SmartFuelStopTile extends StatelessWidget {
+  const _SmartFuelStopTile({required this.recommendation, required this.onTap});
+
+  final SmartFuelStopRecommendation recommendation;
+  final VoidCallback onTap;
+
+  String _formatMeters(double meters) {
+    if (meters < 1000) {
+      return '${meters.round()} m';
+    }
+
+    return '${(meters / 1000).toStringAsFixed(1)} km';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final place = recommendation.place;
+
+    return Card(
+      margin: const EdgeInsets.only(top: 8),
+      elevation: 0,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+        leading: CircleAvatar(
+          backgroundColor: Colors.green.shade700,
+          foregroundColor: Colors.white,
+          child: Text(
+            '${recommendation.stopNumber}',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+        title: Text(place.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text(
+          'Km ${recommendation.progress.distanceFromStartKm.toStringAsFixed(1)} · '
+          'cách tuyến ${_formatMeters(recommendation.progress.distanceFromRouteMeters)} · '
+          'còn ${_formatMeters(recommendation.marginBeforeSafeLimitMeters)} trước ngưỡng',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: const Icon(Icons.my_location_outlined),
+        onTap: onTap,
       ),
     );
   }
