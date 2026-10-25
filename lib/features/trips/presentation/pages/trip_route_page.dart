@@ -8,6 +8,7 @@ import '../../../map/data/route_providers.dart';
 import '../../../map/domain/along_route_place.dart';
 import '../../../map/domain/route_result.dart';
 import '../../../vehicle/data/vehicle_repository.dart';
+import '../../../vehicle/domain/vehicle.dart';
 import '../../data/connectivity_risk_providers.dart';
 import '../../data/connectivity_risk_service.dart';
 import '../../data/fuel_price_repository.dart';
@@ -19,12 +20,16 @@ import '../../data/trip_budget_repository.dart';
 import '../../data/trip_providers.dart';
 import '../../data/trip_repository.dart';
 import '../../data/trip_route_repository.dart';
+import '../../data/trip_readiness_checklist_providers.dart';
 import '../../domain/connectivity_risk.dart';
+import '../../domain/emergency_readiness.dart';
 import '../../domain/fuel_range_calculator.dart';
 import '../../domain/offline_readiness.dart';
 import '../../domain/offline_readiness_evaluator.dart';
 import '../../domain/offline_readiness_scorer.dart';
 import '../../domain/offline_trip_package_snapshot.dart';
+import '../../domain/personal_readiness.dart';
+import '../../domain/route_weather_readiness.dart';
 import '../../domain/rest_policy_calculator.dart';
 import '../../domain/smart_fuel_stop_recommender.dart';
 import '../../domain/smart_rest_stop_recommender.dart';
@@ -33,7 +38,12 @@ import '../../domain/trip_budget_calculator.dart';
 import '../../domain/trip_cost_estimator.dart';
 import '../../domain/trip_fuel_estimator.dart';
 import '../../domain/trip_route_points.dart';
+import '../../domain/trip_readiness.dart';
+import '../../domain/trip_readiness_checklist_snapshot.dart';
+import '../../domain/trip_readiness_composer.dart';
+import '../../domain/vehicle_readiness.dart';
 import '../connectivity_risk_map_segments.dart';
+import '../widgets/trip_readiness_panel.dart';
 
 class TripRoutePage extends ConsumerStatefulWidget {
   const TripRoutePage({required this.tripId, super.key});
@@ -87,6 +97,12 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   bool _offlinePackageHasConnectivity = false;
   String? _offlinePackageError;
 
+  Vehicle? _readinessVehicle;
+  TripReadinessChecklistSnapshot? _tripReadinessChecklist;
+  bool _isLoadingTripReadiness = true;
+  bool _isSavingTripReadiness = false;
+  String? _tripReadinessError;
+
   bool _isLoading = true;
   String? _errorMessage;
 
@@ -106,8 +122,43 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
   void initState() {
     super.initState();
 
-    Future.microtask(_loadRoute);
+    Future.microtask(() async {
+      await _loadTripReadinessChecklist();
+
+      if (mounted) {
+        await _loadRoute();
+      }
+    });
+
     Future.microtask(_loadOfflinePackageState);
+  }
+
+  Future<void> _loadTripReadinessChecklist() async {
+    try {
+      final snapshot = await ref
+          .read(tripReadinessChecklistServiceProvider)
+          .loadOrCreate(widget.tripId);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _tripReadinessChecklist = snapshot;
+        _isLoadingTripReadiness = false;
+        _tripReadinessError = null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoadingTripReadiness = false;
+        _tripReadinessError =
+            'Không thể đọc checklist chuẩn bị chuyến đi.\n$error';
+      });
+    }
   }
 
   Future<void> _loadOfflinePackageState() async {
@@ -232,6 +283,8 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
         }
       });
 
+      await _syncReadinessRouteFingerprint(route);
+
       ref.invalidate(tripByIdProvider(widget.tripId));
 
       ref.invalidate(currentTripsProvider);
@@ -275,6 +328,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
         if (mounted) {
           setState(() {
+            _readinessVehicle = null;
             _estimateMessage = 'Chuyến đi chưa chọn phương tiện.';
             _fuelRange = null;
             _smartFuelPlan = null;
@@ -289,6 +343,12 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
       final vehicle = await ref
           .read(vehicleRepositoryProvider)
           .getVehicleById(trip.vehicleId!);
+
+      if (mounted) {
+        setState(() {
+          _readinessVehicle = vehicle;
+        });
+      }
 
       if (vehicle.fuelType == 'electric') {
         await tripRepository.updateEstimatedFuel(
@@ -561,7 +621,7 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
 
       final result = await service.search(
         routePoints: route.points,
-        types: Set<AlongRoutePlaceType>.from(_selectedAlongRouteTypes),
+        types: {..._selectedAlongRouteTypes},
         searchRadiusMeters: 2000,
         maxResults: 50,
       );
@@ -2646,6 +2706,397 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
     );
   }
 
+  Future<void> _syncReadinessRouteFingerprint(RouteResult route) async {
+    final snapshot = _tripReadinessChecklist;
+
+    if (snapshot == null) {
+      return;
+    }
+
+    final previousFingerprint = snapshot.routeFingerprint;
+
+    if (previousFingerprint == null || previousFingerprint.trim().isEmpty) {
+      return;
+    }
+
+    final currentFingerprint = _buildRouteFingerprint(route);
+
+    if (previousFingerprint == currentFingerprint) {
+      return;
+    }
+
+    try {
+      final updated = await ref
+          .read(tripReadinessChecklistServiceProvider)
+          .saveRouteWeather(
+            tripId: widget.tripId,
+            confirmations: RouteWeatherReadinessConfirmations(
+              routeReviewed: null,
+              weatherReviewed: snapshot.routeWeather.weatherReviewed,
+              checkedAt: snapshot.routeWeather.checkedAt,
+            ),
+            routeFingerprint: currentFingerprint,
+          );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _tripReadinessChecklist = updated;
+        _tripReadinessError = null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _tripReadinessError =
+            'Tuyến đã thay đổi nhưng không thể cập nhật checklist.\\n$error';
+      });
+    }
+  }
+
+  String _buildRouteFingerprint(RouteResult route) {
+    final points = route.points;
+
+    if (points.isEmpty) {
+      return '${route.distanceMeters}:${route.durationSeconds}:0';
+    }
+
+    final indexes = <int>{
+      0,
+      points.length ~/ 4,
+      points.length ~/ 2,
+      (points.length * 3) ~/ 4,
+      points.length - 1,
+    }.toList(growable: false)..sort();
+
+    final coordinatePart = indexes
+        .map((index) {
+          final point = points[index];
+
+          return '${point.latitude.toStringAsFixed(5)},'
+              '${point.longitude.toStringAsFixed(5)}';
+        })
+        .join('|');
+
+    return '${route.distanceMeters}:${route.durationSeconds}:'
+        '${points.length}:$coordinatePart';
+  }
+
+  ConnectivityRiskAssessment? _effectiveReadinessConnectivityAssessment() {
+    final current = _connectivityRiskSummary?.assessment;
+
+    if (current != null && current.hasRiskData) {
+      return current;
+    }
+
+    if (_offlinePackageNeedsRefresh) {
+      return null;
+    }
+
+    final package = _offlinePackageSnapshot;
+    final cached = package?.connectivity;
+
+    if (package == null || cached == null || cached.segments.isEmpty) {
+      return null;
+    }
+
+    final totalRouteMeters =
+        (_route?.distanceMeters ?? package.route.distanceMeters).toDouble();
+
+    if (totalRouteMeters <= 0) {
+      return null;
+    }
+
+    final segments = cached.segments
+        .map((segment) {
+          final start = segment.startDistanceMeters
+              .clamp(0.0, totalRouteMeters)
+              .toDouble();
+
+          final end = segment.endDistanceMeters
+              .clamp(start, totalRouteMeters)
+              .toDouble();
+
+          return ConnectivityRiskSegment(
+            startDistanceMeters: start,
+            endDistanceMeters: end,
+            startProgressRatio: (start / totalRouteMeters)
+                .clamp(0.0, 1.0)
+                .toDouble(),
+            endProgressRatio: (end / totalRouteMeters)
+                .clamp(0.0, 1.0)
+                .toDouble(),
+            averageRiskScore: segment.averageRiskScore
+                .clamp(0.0, 1.0)
+                .toDouble(),
+            maxRiskScore: segment.maxRiskScore.clamp(0.0, 1.0).toDouble(),
+            level: _connectivityRiskLevelFromKey(segment.levelKey),
+          );
+        })
+        .toList(growable: false);
+
+    return ConnectivityRiskAssessment(
+      totalRouteMeters: totalRouteMeters,
+      overallRiskScore: cached.overallRiskScore.clamp(0.0, 1.0).toDouble(),
+      overallLevel: _connectivityRiskLevelFromKey(cached.overallLevelKey),
+      segments: List<ConnectivityRiskSegment>.unmodifiable(segments),
+      provider: 'offline_cache',
+      generatedAt: cached.generatedAt,
+    );
+  }
+
+  ConnectivityRiskLevel _connectivityRiskLevelFromKey(String key) {
+    for (final level in ConnectivityRiskLevel.values) {
+      if (level.key == key) {
+        return level;
+      }
+    }
+
+    return ConnectivityRiskLevel.unknown;
+  }
+
+  Map<TripReadinessItemType, bool?> _tripReadinessConfirmationValues(
+    TripReadinessChecklistSnapshot snapshot,
+  ) {
+    return {
+      TripReadinessItemType.vehicleFuelOrEnergy:
+          snapshot.vehicle.fuelOrEnergyReady,
+      TripReadinessItemType.vehicleMechanicalCondition:
+          snapshot.vehicle.mechanicalConditionOk,
+      TripReadinessItemType.vehicleTires: snapshot.vehicle.tiresOk,
+      TripReadinessItemType.vehicleDocuments:
+          snapshot.vehicle.documentsAvailable,
+      TripReadinessItemType.personalProtectiveGear:
+          snapshot.personal.protectiveGearReady,
+      TripReadinessItemType.personalEssentials:
+          snapshot.personal.personalEssentialsReady,
+      TripReadinessItemType.routeReviewed: snapshot.routeWeather.routeReviewed,
+      TripReadinessItemType.weatherReviewed:
+          snapshot.routeWeather.weatherReviewed,
+      TripReadinessItemType.emergencyContacts:
+          snapshot.emergency.emergencyContactsReady,
+      TripReadinessItemType.sosPrepared: snapshot.emergency.sosPlanReviewed,
+      TripReadinessItemType.firstAidKit: snapshot.emergency.firstAidKitReady,
+    };
+  }
+
+  Future<void> _updateTripReadinessConfirmation(
+    TripReadinessItemType type,
+    bool? value,
+  ) async {
+    final current = _tripReadinessChecklist;
+
+    if (current == null || _isSavingTripReadiness) {
+      return;
+    }
+
+    setState(() {
+      _isSavingTripReadiness = true;
+      _tripReadinessError = null;
+    });
+
+    try {
+      final service = ref.read(tripReadinessChecklistServiceProvider);
+      final checkedAt = DateTime.now().toUtc();
+
+      late TripReadinessChecklistSnapshot updated;
+
+      switch (type) {
+        case TripReadinessItemType.vehicleFuelOrEnergy:
+        case TripReadinessItemType.vehicleMechanicalCondition:
+        case TripReadinessItemType.vehicleTires:
+        case TripReadinessItemType.vehicleDocuments:
+          final vehicle = current.vehicle;
+
+          updated = await service.saveVehicle(
+            tripId: widget.tripId,
+            confirmations: VehicleReadinessConfirmations(
+              fuelOrEnergyReady:
+                  type == TripReadinessItemType.vehicleFuelOrEnergy
+                  ? value
+                  : vehicle.fuelOrEnergyReady,
+              mechanicalConditionOk:
+                  type == TripReadinessItemType.vehicleMechanicalCondition
+                  ? value
+                  : vehicle.mechanicalConditionOk,
+              tiresOk: type == TripReadinessItemType.vehicleTires
+                  ? value
+                  : vehicle.tiresOk,
+              documentsAvailable: type == TripReadinessItemType.vehicleDocuments
+                  ? value
+                  : vehicle.documentsAvailable,
+              checkedAt: checkedAt,
+            ),
+          );
+          break;
+
+        case TripReadinessItemType.personalProtectiveGear:
+        case TripReadinessItemType.personalEssentials:
+          final personal = current.personal;
+
+          updated = await service.savePersonal(
+            tripId: widget.tripId,
+            confirmations: PersonalReadinessConfirmations(
+              protectiveGearReady:
+                  type == TripReadinessItemType.personalProtectiveGear
+                  ? value
+                  : personal.protectiveGearReady,
+              personalEssentialsReady:
+                  type == TripReadinessItemType.personalEssentials
+                  ? value
+                  : personal.personalEssentialsReady,
+              checkedAt: checkedAt,
+            ),
+          );
+          break;
+
+        case TripReadinessItemType.routeReviewed:
+        case TripReadinessItemType.weatherReviewed:
+          final routeWeather = current.routeWeather;
+          final route = _route;
+
+          updated = await service.saveRouteWeather(
+            tripId: widget.tripId,
+            confirmations: RouteWeatherReadinessConfirmations(
+              routeReviewed: type == TripReadinessItemType.routeReviewed
+                  ? value
+                  : routeWeather.routeReviewed,
+              weatherReviewed: type == TripReadinessItemType.weatherReviewed
+                  ? value
+                  : routeWeather.weatherReviewed,
+              checkedAt: checkedAt,
+            ),
+            routeFingerprint: route == null
+                ? null
+                : _buildRouteFingerprint(route),
+          );
+          break;
+
+        case TripReadinessItemType.emergencyContacts:
+        case TripReadinessItemType.sosPrepared:
+        case TripReadinessItemType.firstAidKit:
+          final emergency = current.emergency;
+
+          updated = await service.saveEmergency(
+            tripId: widget.tripId,
+            confirmations: EmergencyReadinessConfirmations(
+              emergencyContactsReady:
+                  type == TripReadinessItemType.emergencyContacts
+                  ? value
+                  : emergency.emergencyContactsReady,
+              sosPlanReviewed: type == TripReadinessItemType.sosPrepared
+                  ? value
+                  : emergency.sosPlanReviewed,
+              firstAidKitReady: type == TripReadinessItemType.firstAidKit
+                  ? value
+                  : emergency.firstAidKitReady,
+              checkedAt: checkedAt,
+            ),
+          );
+          break;
+
+        case TripReadinessItemType.offlinePackage:
+        case TripReadinessItemType.connectivityReviewed:
+          if (mounted) {
+            setState(() {
+              _isSavingTripReadiness = false;
+            });
+          }
+          return;
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _tripReadinessChecklist = updated;
+        _isSavingTripReadiness = false;
+        _tripReadinessError = null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSavingTripReadiness = false;
+        _tripReadinessError =
+            'Không thể lưu checklist chuẩn bị chuyến đi.\\n$error';
+      });
+    }
+  }
+
+  Widget _buildTripReadinessSection(BuildContext context, Trip? trip) {
+    if (_isLoadingTripReadiness) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+        ),
+        child: const Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 10),
+            Expanded(child: Text('Đang tải checklist chuẩn bị chuyến đi...')),
+          ],
+        ),
+      );
+    }
+
+    final checklist = _tripReadinessChecklist;
+
+    if (checklist == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+        ),
+        child: Text(
+          _tripReadinessError ?? 'Không thể tải checklist chuẩn bị chuyến đi.',
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
+      );
+    }
+
+    final composition = const TripReadinessComposer().compose(
+      offlineAssessment: _offlineReadinessResult().assessment,
+      checklist: checklist,
+      vehicle: trip?.vehicleId == null ? null : _readinessVehicle,
+      hasRoute: _route != null && _route!.points.length >= 2,
+      connectivityAssessment: _effectiveReadinessConnectivityAssessment(),
+      assessedAt: DateTime.now(),
+    );
+
+    return TripReadinessPanel(
+      composition: composition,
+      confirmationValues: _tripReadinessConfirmationValues(checklist),
+      onChanged: _updateTripReadinessConfirmation,
+      vehicleAvailable: trip?.vehicleId != null && _readinessVehicle != null,
+      routeAvailable: _route != null && _route!.points.length >= 2,
+      isSaving: _isSavingTripReadiness,
+      errorMessage: _tripReadinessError,
+    );
+  }
+
   String _formatOfflineSavedAt(DateTime value) {
     final local = value.toLocal();
 
@@ -3182,6 +3633,10 @@ class _TripRoutePageState extends ConsumerState<TripRoutePage> {
                     const Divider(height: 24),
 
                     _buildOfflineReadinessSection(context),
+
+                    const Divider(height: 24),
+
+                    _buildTripReadinessSection(context, currentTrip),
 
                     const Divider(height: 24),
 
