@@ -11,15 +11,15 @@ final tripInvitationRepositoryProvider = Provider<TripInvitationRepository>((
   return SupabaseTripInvitationRepository(ref.watch(supabaseClientProvider));
 });
 
-final tripInvitationsProvider =
-    FutureProvider.family<List<TripInvitation>, String>((ref, tripId) {
+final tripInvitationsProvider = FutureProvider.autoDispose
+    .family<List<TripInvitation>, String>((ref, tripId) {
       return ref
           .watch(tripInvitationRepositoryProvider)
           .getInvitationsForTrip(tripId);
     });
 
 final myPendingTripInvitationsProvider =
-    FutureProvider<List<TripInvitationInboxItem>>((ref) {
+    FutureProvider.autoDispose<List<TripInvitationInboxItem>>((ref) {
       return ref
           .watch(tripInvitationRepositoryProvider)
           .getMyPendingInvitations();

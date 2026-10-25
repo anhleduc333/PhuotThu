@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../data/trip_live_location_providers.dart';
 import '../data/trip_live_map_providers.dart';
+import '../domain/trip_convoy_safety.dart';
 import '../domain/trip_live_map_entry.dart';
 import '../domain/trip_member.dart';
 
@@ -27,6 +28,9 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
 
   final TripLiveMapEntryAssembler _assembler =
       const TripLiveMapEntryAssembler();
+
+  final TripConvoySafetyAnalyzer _convoyAnalyzer =
+      const TripConvoySafetyAnalyzer();
 
   Timer? _freshnessTimer;
   bool _didInitialFit = false;
@@ -120,19 +124,126 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
         '${two(local.day)}/${two(local.month)}/${local.year}';
   }
 
+  TripConvoyMemberFinding? _findingForEntry(
+    TripConvoySafetySummary summary,
+    TripLiveMapEntry entry,
+  ) {
+    for (final finding in summary.findings) {
+      if (finding.entry.userId == entry.userId) {
+        return finding;
+      }
+    }
+
+    return null;
+  }
+
+  Color _safetyColor(BuildContext context, TripConvoySafetyLevel level) {
+    switch (level) {
+      case TripConvoySafetyLevel.noData:
+        return Theme.of(context).colorScheme.outline;
+      case TripConvoySafetyLevel.normal:
+        return Theme.of(context).colorScheme.primary;
+      case TripConvoySafetyLevel.caution:
+        return Colors.orange.shade700;
+      case TripConvoySafetyLevel.critical:
+        return Theme.of(context).colorScheme.error;
+    }
+  }
+
+  IconData _safetyIcon(TripConvoySafetyLevel level) {
+    switch (level) {
+      case TripConvoySafetyLevel.noData:
+        return Icons.help_outline;
+      case TripConvoySafetyLevel.normal:
+        return Icons.shield_outlined;
+      case TripConvoySafetyLevel.caution:
+        return Icons.warning_amber_rounded;
+      case TripConvoySafetyLevel.critical:
+        return Icons.report_problem_outlined;
+    }
+  }
+
+  String _formatDistanceMeters(double? meters) {
+    if (meters == null) {
+      return 'Chưa xác định';
+    }
+
+    if (meters < 1000) {
+      return '${meters.round()} m';
+    }
+
+    return '${(meters / 1000).toStringAsFixed(1)} km';
+  }
+
+  String _safetySummaryText(TripConvoySafetySummary summary) {
+    if (summary.sharingCount == 0) {
+      return 'Chưa có thành viên chia sẻ vị trí.';
+    }
+
+    if (!summary.canAssessSeparation) {
+      if (summary.staleCount > 0) {
+        return '${summary.freshCount} GPS mới • '
+            '${summary.staleCount} GPS cũ/mất tín hiệu.';
+      }
+
+      return 'Chưa đủ ít nhất 2 vị trí mới để đánh giá khoảng cách đoàn.';
+    }
+
+    final maxDistance = _formatDistanceMeters(
+      summary.maxFreshPairDistanceMeters,
+    );
+
+    if (summary.criticalCount > 0) {
+      return '${summary.criticalCount} cảnh báo nghiêm trọng • '
+          'độ giãn đoàn tối đa $maxDistance.';
+    }
+
+    if (summary.cautionCount > 0) {
+      return '${summary.cautionCount} thành viên cần chú ý • '
+          'độ giãn đoàn tối đa $maxDistance.';
+    }
+
+    return '${summary.freshCount} GPS mới • '
+        'độ giãn đoàn tối đa $maxDistance.';
+  }
+
+  Widget _buildSafetyBanner(
+    BuildContext context,
+    TripConvoySafetySummary summary,
+  ) {
+    final color = _safetyColor(context, summary.level);
+
+    return Card(
+      elevation: 4,
+      child: ListTile(
+        leading: Icon(_safetyIcon(summary.level), color: color),
+        title: Text(
+          summary.level.label,
+          style: TextStyle(color: color, fontWeight: FontWeight.w700),
+        ),
+        subtitle: Text(_safetySummaryText(summary)),
+        trailing: summary.hasIssues
+            ? Badge(
+                label: Text('${summary.cautionCount + summary.criticalCount}'),
+                child: const Icon(Icons.notifications_active_outlined),
+              )
+            : null,
+      ),
+    );
+  }
+
   Widget _buildMarker(
     BuildContext context,
     TripLiveMapEntry entry,
     DateTime now,
+    TripConvoyMemberFinding? finding,
   ) {
-    final isFresh = entry.isFreshAt(now);
-    final color = isFresh
-        ? Theme.of(context).colorScheme.primary
-        : Theme.of(context).colorScheme.outline;
+    final level = finding?.level ?? TripConvoySafetyLevel.noData;
+    final color = _safetyColor(context, level);
 
     return GestureDetector(
       onTap: () {
-        _showEntrySheet(context, entry, now);
+        _showEntrySheet(context, entry, now, finding);
       },
       child: SizedBox(
         width: 112,
@@ -196,9 +307,12 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
     BuildContext context,
     TripLiveMapEntry entry,
     DateTime now,
+    TripConvoyMemberFinding? finding,
   ) async {
     final fresh = entry.isFreshAt(now);
     final age = entry.ageAt(now);
+    final safetyLevel = finding?.level ?? TripConvoySafetyLevel.noData;
+    final nearestDistanceMeters = finding?.nearestDistanceMeters;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -237,6 +351,33 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
                   ],
                 ),
                 const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Icon(
+                      _safetyIcon(safetyLevel),
+                      size: 18,
+                      color: _safetyColor(sheetContext, safetyLevel),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        finding?.state.label ?? 'Chưa có đánh giá an toàn',
+                        style: TextStyle(
+                          color: _safetyColor(sheetContext, safetyLevel),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (nearestDistanceMeters != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Khoảng cách tới thành viên gần nhất: '
+                    '${_formatDistanceMeters(nearestDistanceMeters)}',
+                  ),
+                ],
+                const SizedBox(height: 12),
                 Text('Cập nhật: ${_formatAge(age)}'),
                 const SizedBox(height: 4),
                 Text(_formatRecordedAt(entry.location.recordedAt)),
@@ -302,14 +443,15 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
     BuildContext context,
     List<TripLiveMapEntry> entries,
     DateTime now,
+    TripConvoySafetySummary safetySummary,
   ) {
-    final freshCount = entries.where((entry) => entry.isFreshAt(now)).length;
+    final freshCount = safetySummary.freshCount;
 
     return Card(
       margin: const EdgeInsets.all(12),
       elevation: 4,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 210),
+        constraints: const BoxConstraints(maxHeight: 270),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -340,6 +482,9 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
                   itemBuilder: (context, index) {
                     final entry = entries[index];
                     final fresh = entry.isFreshAt(now);
+                    final finding = _findingForEntry(safetySummary, entry);
+                    final safetyLevel =
+                        finding?.level ?? TripConvoySafetyLevel.noData;
 
                     return ListTile(
                       dense: true,
@@ -354,15 +499,13 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
                       ),
                       subtitle: Text(
                         '${entry.role.label} • '
-                        '${fresh ? 'Trực tiếp' : 'Vị trí cũ'} • '
+                        '${finding?.state.label ?? (fresh ? 'Trực tiếp' : 'Vị trí cũ')} • '
                         '${_formatAge(entry.ageAt(now))}',
                       ),
                       trailing: Icon(
-                        fresh ? Icons.radio_button_checked : Icons.history,
+                        _safetyIcon(safetyLevel),
                         size: 18,
-                        color: fresh
-                            ? Theme.of(context).colorScheme.primary
-                            : Theme.of(context).colorScheme.outline,
+                        color: _safetyColor(context, safetyLevel),
                       ),
                       onTap: () {
                         _focusEntry(entry);
@@ -379,6 +522,7 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
 
   Widget _buildMap(BuildContext context, List<TripLiveMapEntry> entries) {
     final now = DateTime.now();
+    final safetySummary = _convoyAnalyzer.analyze(entries: entries, now: now);
 
     _scheduleInitialFit(entries);
 
@@ -388,7 +532,12 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
             point: LatLng(entry.location.latitude, entry.location.longitude),
             width: 112,
             height: 72,
-            child: _buildMarker(context, entry, now),
+            child: _buildMarker(
+              context,
+              entry,
+              now,
+              _findingForEntry(safetySummary, entry),
+            ),
           ),
         )
         .toList(growable: false);
@@ -416,12 +565,18 @@ class _TripGroupLiveMapPageState extends ConsumerState<TripGroupLiveMapPage> {
             ),
           ],
         ),
+        Positioned(
+          left: 12,
+          right: 12,
+          top: 12,
+          child: _buildSafetyBanner(context, safetySummary),
+        ),
         if (entries.isEmpty) _buildEmptyOverlay(context),
         Positioned(
           left: 0,
           right: 0,
           bottom: 0,
-          child: _buildBottomPanel(context, entries, now),
+          child: _buildBottomPanel(context, entries, now, safetySummary),
         ),
       ],
     );

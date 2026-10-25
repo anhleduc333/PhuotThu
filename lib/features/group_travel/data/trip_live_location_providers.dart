@@ -12,8 +12,8 @@ final tripLiveLocationRepositoryProvider = Provider<TripLiveLocationRepository>(
   },
 );
 
-final tripLiveLocationsProvider =
-    StreamProvider.family<List<TripLiveLocation>, String>((ref, tripId) {
+final tripLiveLocationsProvider = StreamProvider.autoDispose
+    .family<List<TripLiveLocation>, String>((ref, tripId) {
       return ref
           .watch(tripLiveLocationRepositoryProvider)
           .watchTripLocations(tripId);

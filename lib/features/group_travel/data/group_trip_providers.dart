@@ -9,14 +9,12 @@ final groupTripRepositoryProvider = Provider<GroupTripRepository>((ref) {
   return SupabaseGroupTripRepository(ref.watch(supabaseClientProvider));
 });
 
-final groupTripStateProvider = FutureProvider.family<GroupTripState, String>((
-  ref,
-  tripId,
-) {
-  return ref.watch(groupTripRepositoryProvider).getGroupTripState(tripId);
-});
+final groupTripStateProvider = FutureProvider.autoDispose
+    .family<GroupTripState, String>((ref, tripId) {
+      return ref.watch(groupTripRepositoryProvider).getGroupTripState(tripId);
+    });
 
-final tripMemberViewsProvider =
-    FutureProvider.family<List<TripMemberView>, String>((ref, tripId) {
+final tripMemberViewsProvider = FutureProvider.autoDispose
+    .family<List<TripMemberView>, String>((ref, tripId) {
       return ref.watch(groupTripRepositoryProvider).getMemberViews(tripId);
     });
