@@ -12,6 +12,7 @@ import '../../../group_travel/domain/trip_invitation.dart';
 import '../../../group_travel/domain/trip_invitation_request.dart';
 import '../../../group_travel/domain/trip_member.dart';
 import '../../../group_travel/domain/trip_member_view.dart';
+import '../../../group_travel/presentation/trip_group_live_map_page.dart';
 import '../../../vehicle/data/vehicle_providers.dart';
 import '../../../vehicle/domain/vehicle.dart';
 import '../../data/trip_budget_providers.dart';
@@ -181,6 +182,16 @@ class TripDetailPage extends ConsumerWidget {
     ref.invalidate(tripBudgetItemsProvider(tripId));
 
     ref.invalidate(currentTripsProvider);
+  }
+
+  Future<void> _viewGroupLiveMap(BuildContext context) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) {
+          return TripGroupLiveMapPage(tripId: tripId);
+        },
+      ),
+    );
   }
 
   Future<void> _enableGroupTrip(BuildContext context, WidgetRef ref) async {
@@ -903,6 +914,19 @@ class TripDetailPage extends ConsumerWidget {
                   title: const Text('Chuyến đi nhóm'),
                   subtitle: Text('Đã bật • $memberDescription'),
                   trailing: const Chip(label: Text('Đã bật')),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.tonalIcon(
+                      onPressed: () {
+                        _viewGroupLiveMap(context);
+                      },
+                      icon: const Icon(Icons.map_outlined),
+                      label: const Text('Bản đồ nhóm trực tiếp'),
+                    ),
+                  ),
                 ),
                 if (viewerCanManageMembers) ...[
                   ListTile(
