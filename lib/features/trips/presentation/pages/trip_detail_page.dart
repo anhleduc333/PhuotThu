@@ -1,7 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../group_travel/data/group_trip_providers.dart';
+import '../../../group_travel/data/trip_live_location_publisher_providers.dart';
+import '../../../group_travel/data/trip_live_location_sharing_service.dart';
+import '../../../group_travel/data/trip_invitation_providers.dart';
+import '../../../group_travel/domain/group_trip_state.dart';
+import '../../../group_travel/domain/trip_invitation.dart';
+import '../../../group_travel/domain/trip_invitation_request.dart';
+import '../../../group_travel/domain/trip_member.dart';
+import '../../../group_travel/domain/trip_member_view.dart';
 import '../../../vehicle/data/vehicle_providers.dart';
 import '../../../vehicle/domain/vehicle.dart';
 import '../../data/trip_budget_providers.dart';
@@ -173,6 +183,822 @@ class TripDetailPage extends ConsumerWidget {
     ref.invalidate(currentTripsProvider);
   }
 
+  Future<void> _enableGroupTrip(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Bật chuyến đi nhóm?'),
+          content: const Text(
+            'Sau khi bật, chuyến đi này có thể sử dụng các chức năng '
+            'nhóm như mời thành viên, chia sẻ vị trí và theo dõi đoàn '
+            'ở các bước tiếp theo.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: const Text('Hủy'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: const Text('Bật chuyến đi nhóm'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      await ref.read(groupTripRepositoryProvider).enableGroupTrip(tripId);
+
+      ref.invalidate(groupTripStateProvider(tripId));
+
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Đã bật chuyến đi nhóm.')));
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể bật chuyến đi nhóm: $error')),
+      );
+    }
+  }
+
+  Future<void> _inviteTripMember(BuildContext context, WidgetRef ref) async {
+    final emailController = TextEditingController();
+    var selectedRole = TripInvitationRole.member;
+    String? validationError;
+
+    try {
+      final input = await showDialog<CreateTripInvitationInput>(
+        context: context,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (dialogContext, setDialogState) {
+              return AlertDialog(
+                title: const Text('Mời thành viên'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Nhập chính xác email tài khoản PhuotThu '
+                        'của người anh muốn mời.',
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.done,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        decoration: InputDecoration(
+                          labelText: 'Email',
+                          hintText: 'rider@example.com',
+                          errorText: validationError,
+                          border: const OutlineInputBorder(),
+                        ),
+                        onChanged: (_) {
+                          if (validationError != null) {
+                            setDialogState(() {
+                              validationError = null;
+                            });
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Vai trò khi tham gia',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButton<TripInvitationRole>(
+                        value: selectedRole,
+                        isExpanded: true,
+                        items: TripInvitationRole.values
+                            .map(
+                              (role) => DropdownMenuItem(
+                                value: role,
+                                child: Text(role.label),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (role) {
+                          if (role == null) {
+                            return;
+                          }
+
+                          setDialogState(() {
+                            selectedRole = role;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Lời mời có hiệu lực trong 7 ngày. '
+                        'Chủ chuyến không thể được tạo bằng lời mời.',
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(dialogContext).pop();
+                    },
+                    child: const Text('Hủy'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: () {
+                      try {
+                        final value = CreateTripInvitationInput(
+                          tripId: tripId,
+                          email: emailController.text,
+                          role: selectedRole,
+                        );
+
+                        Navigator.of(dialogContext).pop(value);
+                      } on ArgumentError {
+                        setDialogState(() {
+                          validationError = 'Email không hợp lệ.';
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.send_outlined),
+                    label: const Text('Gửi lời mời'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+
+      if (input == null) {
+        return;
+      }
+
+      await ref.read(tripInvitationRepositoryProvider).inviteByEmail(input);
+
+      ref.invalidate(tripInvitationsProvider(tripId));
+      ref.invalidate(groupTripStateProvider(tripId));
+
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Đã gửi lời mời đến ${input.email}.')),
+      );
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Không thể gửi lời mời: $error')));
+    } finally {
+      emailController.dispose();
+    }
+  }
+
+  void _invalidateGroupData(WidgetRef ref) {
+    ref.invalidate(groupTripStateProvider(tripId));
+    ref.invalidate(tripMemberViewsProvider(tripId));
+    ref.invalidate(tripInvitationsProvider(tripId));
+    ref.invalidate(currentTripsProvider);
+  }
+
+  Future<void> _setMemberRole(
+    BuildContext context,
+    WidgetRef ref, {
+    required TripMemberView member,
+    required TripMemberRole role,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Thay đổi vai trò?'),
+          content: Text(
+            'Đổi vai trò của "${member.displayName}" '
+            'thành ${role.label}?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: const Text('Hủy'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: const Text('Xác nhận'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      await ref
+          .read(groupTripRepositoryProvider)
+          .setMemberRole(
+            tripId: tripId,
+            memberUserId: member.userId,
+            role: role,
+          );
+
+      _invalidateGroupData(ref);
+
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Đã cập nhật ${member.displayName} thành ${role.label}.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể thay đổi vai trò: $error')),
+      );
+    }
+  }
+
+  Future<void> _removeMember(
+    BuildContext context,
+    WidgetRef ref, {
+    required TripMemberView member,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Loại thành viên?'),
+          content: Text(
+            'Bạn có chắc muốn loại "${member.displayName}" '
+            'khỏi chuyến đi này?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: const Text('Hủy'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: const Text('Loại thành viên'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      await ref
+          .read(groupTripRepositoryProvider)
+          .removeMember(tripId: tripId, memberUserId: member.userId);
+
+      _invalidateGroupData(ref);
+
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Đã loại ${member.displayName} khỏi chuyến đi.'),
+        ),
+      );
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể loại thành viên: $error')),
+      );
+    }
+  }
+
+  Future<void> _leaveGroupTrip(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Rời chuyến đi?'),
+          content: const Text(
+            'Sau khi rời chuyến, bạn sẽ không còn quyền xem '
+            'dữ liệu nhóm của chuyến này.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: const Text('Hủy'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: const Text('Rời chuyến'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      final publisher = ref.read(tripLiveLocationPublisherProvider);
+
+      if (publisher.status.tripId == tripId) {
+        try {
+          await publisher.stop(clearRemote: false);
+        } catch (_) {
+          // Backend leave_trip() vẫn là nguồn sự thật.
+          // Trigger DB sẽ xóa live location sau khi rời chuyến.
+        }
+      }
+
+      await ref.read(groupTripRepositoryProvider).leaveTrip(tripId);
+
+      _invalidateGroupData(ref);
+
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Bạn đã rời chuyến đi.')));
+
+      context.pop();
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể rời chuyến đi: $error')),
+      );
+    }
+  }
+
+  TripMember? _activeMembershipForUser(
+    GroupTripState groupState,
+    String? userId,
+  ) {
+    if (userId == null) {
+      return null;
+    }
+
+    for (final member in groupState.members) {
+      if (member.userId == userId && member.isActive) {
+        return member;
+      }
+    }
+
+    return null;
+  }
+
+  bool _canRemoveMember(
+    GroupTripState groupState,
+    TripMemberView member, {
+    required String? currentUserId,
+  }) {
+    if (currentUserId == null ||
+        member.isOwner ||
+        member.userId == currentUserId) {
+      return false;
+    }
+
+    final viewerIsOwner = groupState.ownerId == currentUserId;
+
+    if (viewerIsOwner) {
+      return true;
+    }
+
+    final viewerMembership = _activeMembershipForUser(
+      groupState,
+      currentUserId,
+    );
+
+    return viewerMembership?.role == TripMemberRole.leader &&
+        member.role == TripMemberRole.member;
+  }
+
+  Widget _buildTripMembersSection(
+    BuildContext context,
+    WidgetRef ref, {
+    required GroupTripState groupState,
+    required AsyncValue<List<TripMemberView>> membersAsync,
+    required String? currentUserId,
+  }) {
+    return membersAsync.when(
+      loading: () {
+        return const Padding(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 12),
+              Expanded(child: Text('Đang tải danh sách thành viên...')),
+            ],
+          ),
+        );
+      },
+      error: (error, stackTrace) {
+        return ListTile(
+          leading: Icon(
+            Icons.error_outline,
+            color: Theme.of(context).colorScheme.error,
+          ),
+          title: const Text('Không thể tải danh sách thành viên'),
+          subtitle: const Text('Nhấn thử lại để tải lại.'),
+          trailing: IconButton(
+            onPressed: () {
+              ref.invalidate(tripMemberViewsProvider(tripId));
+            },
+            tooltip: 'Thử lại',
+            icon: const Icon(Icons.refresh),
+          ),
+        );
+      },
+      data: (members) {
+        if (members.isEmpty) {
+          return const ListTile(
+            leading: Icon(Icons.people_outline),
+            title: Text('Thành viên chuyến đi'),
+            subtitle: Text('Chưa có thành viên đang hoạt động.'),
+          );
+        }
+
+        final viewerIsOwner =
+            currentUserId != null && groupState.ownerId == currentUserId;
+
+        final viewerMembership = _activeMembershipForUser(
+          groupState,
+          currentUserId,
+        );
+
+        final viewerCanLeave =
+            !viewerIsOwner && (viewerMembership?.canLeave ?? false);
+
+        return Column(
+          children: [
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.people_outline),
+              title: const Text('Thành viên chuyến đi'),
+              subtitle: Text('${members.length} thành viên đang hoạt động'),
+            ),
+            ...members.expand((member) {
+              final isViewer =
+                  currentUserId != null && member.userId == currentUserId;
+
+              final canChangeRole =
+                  viewerIsOwner && !member.isOwner && !isViewer;
+
+              final canRemove = _canRemoveMember(
+                groupState,
+                member,
+                currentUserId: currentUserId,
+              );
+
+              final hasMenu = canChangeRole || canRemove;
+
+              return [
+                ListTile(
+                  leading: CircleAvatar(child: Text(member.initials)),
+                  title: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          member.displayName,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isViewer) ...[
+                        const SizedBox(width: 8),
+                        const Chip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text('Bạn'),
+                        ),
+                      ],
+                    ],
+                  ),
+                  subtitle: Text(member.subtitle),
+                  trailing: hasMenu
+                      ? PopupMenuButton<String>(
+                          tooltip: 'Quản lý thành viên',
+                          onSelected: (value) {
+                            switch (value) {
+                              case 'leader':
+                                _setMemberRole(
+                                  context,
+                                  ref,
+                                  member: member,
+                                  role: TripMemberRole.leader,
+                                );
+                                break;
+                              case 'member':
+                                _setMemberRole(
+                                  context,
+                                  ref,
+                                  member: member,
+                                  role: TripMemberRole.member,
+                                );
+                                break;
+                              case 'remove':
+                                _removeMember(context, ref, member: member);
+                                break;
+                            }
+                          },
+                          itemBuilder: (context) {
+                            return [
+                              if (canChangeRole &&
+                                  member.role != TripMemberRole.leader)
+                                const PopupMenuItem(
+                                  value: 'leader',
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.shield_outlined),
+                                    title: Text('Đặt làm Trưởng nhóm'),
+                                  ),
+                                ),
+                              if (canChangeRole &&
+                                  member.role != TripMemberRole.member)
+                                const PopupMenuItem(
+                                  value: 'member',
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.person_outline),
+                                    title: Text('Đặt làm Thành viên'),
+                                  ),
+                                ),
+                              if (canRemove)
+                                const PopupMenuItem(
+                                  value: 'remove',
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.person_remove_outlined),
+                                    title: Text('Loại khỏi chuyến'),
+                                  ),
+                                ),
+                            ];
+                          },
+                        )
+                      : null,
+                ),
+                if (isViewer)
+                  _TripLiveLocationSharingTile(
+                    tripId: tripId,
+                    sharingEnabled: member.locationSharing,
+                    onDataChanged: () {
+                      _invalidateGroupData(ref);
+                    },
+                  ),
+              ];
+            }),
+            if (viewerCanLeave)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      _leaveGroupTrip(context, ref);
+                    },
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Rời chuyến đi'),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildGroupTravelCard(
+    BuildContext context,
+    WidgetRef ref,
+    AsyncValue<GroupTripState> groupAsync,
+    AsyncValue<List<TripInvitation>> invitationsAsync,
+    AsyncValue<List<TripMemberView>> membersAsync, {
+    required String? currentUserId,
+  }) {
+    return Card(
+      child: groupAsync.when(
+        loading: () {
+          return const ListTile(
+            leading: SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            title: Text('Chuyến đi nhóm'),
+            subtitle: Text('Đang tải trạng thái nhóm...'),
+          );
+        },
+        error: (error, stackTrace) {
+          return ListTile(
+            leading: Icon(
+              Icons.error_outline,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            title: const Text('Chuyến đi nhóm'),
+            subtitle: const Text('Không thể tải trạng thái nhóm.'),
+            trailing: IconButton(
+              onPressed: () {
+                ref.invalidate(groupTripStateProvider(tripId));
+              },
+              tooltip: 'Thử lại',
+              icon: const Icon(Icons.refresh),
+            ),
+          );
+        },
+        data: (groupState) {
+          final viewerIsOwner =
+              currentUserId != null && groupState.ownerId == currentUserId;
+
+          final viewerMembership = _activeMembershipForUser(
+            groupState,
+            currentUserId,
+          );
+
+          final viewerCanManageMembers =
+              viewerIsOwner || (viewerMembership?.canManageMembers ?? false);
+
+          if (groupState.isGroupEnabled) {
+            final memberDescription = groupState.hasOtherActiveMembers
+                ? '${groupState.activeMemberCount} '
+                      'thành viên đang tham gia'
+                : 'Chưa có thành viên khác';
+
+            final invitationSummary = invitationsAsync.when(
+              data: (invitations) {
+                final now = DateTime.now();
+
+                final pendingCount = invitations
+                    .where((invitation) => invitation.isActionableAt(now))
+                    .length;
+
+                return '$pendingCount lời mời đang chờ';
+              },
+              loading: () => 'Đang tải lời mời...',
+              error: (error, stackTrace) => 'Không thể tải lời mời.',
+            );
+
+            return Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.groups_outlined),
+                  title: const Text('Chuyến đi nhóm'),
+                  subtitle: Text('Đã bật • $memberDescription'),
+                  trailing: const Chip(label: Text('Đã bật')),
+                ),
+                if (viewerCanManageMembers) ...[
+                  ListTile(
+                    leading: const Icon(Icons.mark_email_unread_outlined),
+                    title: const Text('Lời mời'),
+                    subtitle: Text(invitationSummary),
+                    trailing: invitationsAsync.hasError
+                        ? IconButton(
+                            onPressed: () {
+                              ref.invalidate(tripInvitationsProvider(tripId));
+                            },
+                            tooltip: 'Tải lại lời mời',
+                            icon: const Icon(Icons.refresh),
+                          )
+                        : null,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.tonalIcon(
+                        onPressed: () {
+                          _inviteTripMember(context, ref);
+                        },
+                        icon: const Icon(Icons.person_add_alt_1_outlined),
+                        label: const Text('Mời thành viên'),
+                      ),
+                    ),
+                  ),
+                ],
+                if (viewerIsOwner)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Bạn là chủ chuyến. '
+                        'Owner và leader có thể mời '
+                        'thành viên vào chuyến đi.',
+                      ),
+                    ),
+                  ),
+                _buildTripMembersSection(
+                  context,
+                  ref,
+                  groupState: groupState,
+                  membersAsync: membersAsync,
+                  currentUserId: currentUserId,
+                ),
+              ],
+            );
+          }
+
+          return Column(
+            children: [
+              const ListTile(
+                leading: Icon(Icons.group_add_outlined),
+                title: Text('Chuyến đi nhóm'),
+                subtitle: Text(
+                  'Bật chế độ nhóm để chuẩn bị '
+                  'mời thành viên và sử dụng các '
+                  'tính năng đi theo đoàn.',
+                ),
+              ),
+              if (viewerIsOwner)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.tonalIcon(
+                      onPressed: () {
+                        _enableGroupTrip(context, ref);
+                      },
+                      icon: const Icon(Icons.groups_outlined),
+                      label: const Text('Bật chuyến đi nhóm'),
+                    ),
+                  ),
+                )
+              else
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Chỉ chủ chuyến mới có thể '
+                      'bật chế độ nhóm.',
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _viewBudget(BuildContext context, WidgetRef ref) async {
     await context.push('/trips/$tripId/budget');
 
@@ -320,9 +1146,17 @@ class TripDetailPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+
     final tripAsync = ref.watch(tripByIdProvider(tripId));
 
     final budgetItemsAsync = ref.watch(tripBudgetItemsProvider(tripId));
+
+    final groupTripAsync = ref.watch(groupTripStateProvider(tripId));
+
+    final invitationsAsync = ref.watch(tripInvitationsProvider(tripId));
+
+    final memberViewsAsync = ref.watch(tripMemberViewsProvider(tripId));
 
     return Scaffold(
       appBar: AppBar(title: const Text('Chi tiết chuyến đi')),
@@ -413,6 +1247,12 @@ class TripDetailPage extends ConsumerWidget {
             final exceedsBudget =
                 remainingBudget != null && remainingBudget < 0;
 
+            final viewerIsTripOwner = groupTripAsync.maybeWhen(
+              data: (groupState) =>
+                  currentUserId != null && groupState.ownerId == currentUserId,
+              orElse: () => false,
+            );
+
             return ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -435,6 +1275,17 @@ class TripDetailPage extends ConsumerWidget {
                 ],
 
                 const SizedBox(height: 16),
+
+                _buildGroupTravelCard(
+                  context,
+                  ref,
+                  groupTripAsync,
+                  invitationsAsync,
+                  memberViewsAsync,
+                  currentUserId: currentUserId,
+                ),
+
+                const SizedBox(height: 8),
 
                 Card(
                   child: Column(
@@ -639,17 +1490,20 @@ class TripDetailPage extends ConsumerWidget {
                   const SizedBox(height: 12),
                 ],
 
-                OutlinedButton.icon(
-                  onPressed: () {
-                    _editTrip(context, ref);
-                  },
-                  icon: const Icon(Icons.edit_outlined),
-                  label: const Text('Chỉnh sửa chuyến đi'),
-                ),
+                if (viewerIsTripOwner) ...[
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      _editTrip(context, ref);
+                    },
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('Chỉnh sửa chuyến đi'),
+                  ),
 
-                const SizedBox(height: 12),
+                  const SizedBox(height: 12),
+                ],
 
-                if (trip.status == 'draft' || trip.status == 'planned')
+                if (viewerIsTripOwner &&
+                    (trip.status == 'draft' || trip.status == 'planned'))
                   OutlinedButton.icon(
                     onPressed: () {
                       _changePlanStatus(context, ref, trip);
@@ -666,20 +1520,233 @@ class TripDetailPage extends ConsumerWidget {
                     ),
                   ),
 
-                const SizedBox(height: 12),
+                if (viewerIsTripOwner) ...[
+                  const SizedBox(height: 12),
 
-                TextButton.icon(
-                  onPressed: () {
-                    _deleteTrip(context, ref, trip);
-                  },
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('Xóa chuyến đi'),
-                ),
+                  TextButton.icon(
+                    onPressed: () {
+                      _deleteTrip(context, ref, trip);
+                    },
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Xóa chuyến đi'),
+                  ),
+                ],
               ],
             );
           },
         ),
       ),
+    );
+  }
+}
+
+class _TripLiveLocationSharingTile extends ConsumerStatefulWidget {
+  const _TripLiveLocationSharingTile({
+    required this.tripId,
+    required this.sharingEnabled,
+    required this.onDataChanged,
+  });
+
+  final String tripId;
+  final bool sharingEnabled;
+  final VoidCallback onDataChanged;
+
+  @override
+  ConsumerState<_TripLiveLocationSharingTile> createState() =>
+      _TripLiveLocationSharingTileState();
+}
+
+class _TripLiveLocationSharingTileState
+    extends ConsumerState<_TripLiveLocationSharingTile> {
+  bool _busy = false;
+  bool _resumeScheduled = false;
+
+  TripLiveLocationSharingResult? _runtimeResult;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _scheduleResumeIfNeeded();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TripLiveLocationSharingTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.tripId != widget.tripId) {
+      _runtimeResult = null;
+      _resumeScheduled = false;
+      _scheduleResumeIfNeeded();
+      return;
+    }
+
+    if (!oldWidget.sharingEnabled && widget.sharingEnabled) {
+      _scheduleResumeIfNeeded();
+    }
+
+    if (oldWidget.sharingEnabled && !widget.sharingEnabled) {
+      _runtimeResult = TripLiveLocationSharingResult.disabled;
+    }
+  }
+
+  void _scheduleResumeIfNeeded() {
+    if (!widget.sharingEnabled || _resumeScheduled) {
+      return;
+    }
+
+    _resumeScheduled = true;
+
+    Future<void>.microtask(() async {
+      try {
+        final result = await ref
+            .read(tripLiveLocationSharingServiceProvider)
+            .resumeIfEnabled(tripId: widget.tripId, enabled: true);
+
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _runtimeResult = result;
+        });
+      } catch (error) {
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _runtimeResult = null;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Không thể khôi phục Live Location: '
+              '$error',
+            ),
+          ),
+        );
+      } finally {
+        _resumeScheduled = false;
+      }
+    });
+  }
+
+  Future<void> _toggle(bool enabled) async {
+    if (_busy) {
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+    });
+
+    try {
+      final result = await ref
+          .read(tripLiveLocationSharingServiceProvider)
+          .setEnabled(tripId: widget.tripId, enabled: enabled);
+
+      widget.onDataChanged();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _runtimeResult = result;
+      });
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_messageForResult(result))));
+    } catch (error) {
+      widget.onDataChanged();
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Không thể cập nhật Live Location: '
+            '$error',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  String _messageForResult(TripLiveLocationSharingResult result) {
+    switch (result) {
+      case TripLiveLocationSharingResult.enabled:
+        return 'Đã bật Live Location cho chuyến đi.';
+      case TripLiveLocationSharingResult.disabled:
+        return 'Đã tắt Live Location cho chuyến đi.';
+      case TripLiveLocationSharingResult.serviceDisabled:
+        return 'Không thể bật Live Location vì '
+            'dịch vụ vị trí đang tắt.';
+      case TripLiveLocationSharingResult.permissionDenied:
+        return 'Không thể bật Live Location vì '
+            'chưa được cấp quyền vị trí.';
+      case TripLiveLocationSharingResult.permissionDeniedForever:
+        return 'Quyền vị trí đã bị từ chối vĩnh viễn. '
+            'Hãy bật lại trong Cài đặt ứng dụng.';
+    }
+  }
+
+  String _subtitle() {
+    if (_busy) {
+      return 'Đang cập nhật Live Location...';
+    }
+
+    if (!widget.sharingEnabled) {
+      return 'Đang tắt. Vị trí hiện tại '
+          'không được gửi cho thành viên khác.';
+    }
+
+    switch (_runtimeResult) {
+      case TripLiveLocationSharingResult.enabled:
+        return 'Đang chia sẻ vị trí trực tiếp '
+            'cho các thành viên đang hoạt động.';
+      case TripLiveLocationSharingResult.serviceDisabled:
+        return 'Đã bật chia sẻ nhưng GPS/dịch vụ vị trí '
+            'đang tắt trên thiết bị.';
+      case TripLiveLocationSharingResult.permissionDenied:
+        return 'Đã bật chia sẻ nhưng ứng dụng '
+            'chưa có quyền truy cập vị trí.';
+      case TripLiveLocationSharingResult.permissionDeniedForever:
+        return 'Đã bật chia sẻ nhưng quyền vị trí '
+            'đã bị chặn trong Cài đặt.';
+      case TripLiveLocationSharingResult.disabled:
+        return 'Đang tắt. Vị trí hiện tại '
+            'không được gửi cho thành viên khác.';
+      case null:
+        return 'Đang khởi tạo Live Location...';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+      secondary: _busy
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.location_on_outlined),
+      title: const Text('Chia sẻ vị trí của tôi'),
+      subtitle: Text(_subtitle()),
+      value: widget.sharingEnabled,
+      onChanged: _busy ? null : _toggle,
     );
   }
 }

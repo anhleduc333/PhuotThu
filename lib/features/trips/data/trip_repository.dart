@@ -37,26 +37,30 @@ class TripRepository {
   }
 
   Future<List<Trip>> getTrips() async {
-    final userId = _currentUserId();
+    // Bảo đảm chỉ user đã đăng nhập mới gọi được repository.
+    //
+    // Từ DEV-09.4A, quyền xem trip được quyết định bởi RLS:
+    // - Chủ chuyến;
+    // - Thành viên active của chuyến.
+    //
+    // Vì vậy không lọc owner_id tại client nữa.
+    _currentUserId();
 
     final data = await _client
         .from('trips')
         .select()
-        .eq('owner_id', userId)
         .order('created_at', ascending: false);
 
     return data.map((item) => Trip.fromMap(item)).toList();
   }
 
   Future<Trip> getTripById(String tripId) async {
-    final userId = _currentUserId();
+    // RLS sẽ chỉ cho phép đọc nếu user:
+    // - là owner; hoặc
+    // - là active trip member.
+    _currentUserId();
 
-    final data = await _client
-        .from('trips')
-        .select()
-        .eq('id', tripId)
-        .eq('owner_id', userId)
-        .single();
+    final data = await _client.from('trips').select().eq('id', tripId).single();
 
     return Trip.fromMap(data);
   }
