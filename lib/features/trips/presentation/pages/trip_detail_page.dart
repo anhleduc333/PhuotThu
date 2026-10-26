@@ -13,6 +13,7 @@ import '../../../group_travel/domain/trip_invitation_request.dart';
 import '../../../group_travel/domain/trip_member.dart';
 import '../../../group_travel/domain/trip_member_view.dart';
 import '../../../group_travel/presentation/trip_group_live_map_page.dart';
+import '../../../group_travel/presentation/trip_checkpoint_management_page.dart';
 import '../../../vehicle/data/vehicle_providers.dart';
 import '../../../vehicle/domain/vehicle.dart';
 import '../../data/trip_budget_providers.dart';
@@ -190,6 +191,14 @@ class TripDetailPage extends ConsumerWidget {
         builder: (_) {
           return TripGroupLiveMapPage(tripId: tripId);
         },
+      ),
+    );
+  }
+
+  Future<void> _viewTripCheckpoints(BuildContext context) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TripCheckpointManagementPage(tripId: tripId),
       ),
     );
   }
@@ -925,6 +934,19 @@ class TripDetailPage extends ConsumerWidget {
                       },
                       icon: const Icon(Icons.map_outlined),
                       label: const Text('Bản đồ nhóm trực tiếp'),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.tonalIcon(
+                      onPressed: () {
+                        _viewTripCheckpoints(context);
+                      },
+                      icon: const Icon(Icons.flag_outlined),
+                      label: const Text('Điểm hẹn / Checkpoint'),
                     ),
                   ),
                 ),
