@@ -69,7 +69,9 @@ Bảng sau phản ánh **những chức năng có mã nguồn trong nhánh `deve
 | Group Progress | Xem số thành viên đã/chưa đến, xác nhận thủ công, trạng thái và khoảng cách | Đã triển khai; tiến độ arrivals **làm mới mỗi 10 giây** |
 | GPS Track & Replay | Ghi điểm GPS và phát lại trên bản đồ | **Bản demo cục bộ, chỉ ghi khi màn hình đang mở** |
 | Thông tin khẩn cấp | Lấy GPS, tạo nội dung chứa tọa độ và sao chép để tự gửi | **Bản demo, không tự gửi SOS hoặc gọi cứu hộ** |
-| Community / Social | Khung điều hướng cộng đồng | **Chưa** triển khai mạng xã hội đầy đủ |
+| Trang chủ / Social Feed | Bảng tin bài đăng về các chuyến phượt, ảnh, tìm kiếm, bộ lọc, thích, lưu, bình luận và soạn bài | **Đã có giao diện tương tác với dữ liệu mẫu cục bộ**, chưa có API đăng bài hoặc đồng bộ với tài khoản khác |
+| Cộng đồng / Messaging | Danh sách trò chuyện cá nhân/nhóm, tìm kiếm, lọc chưa đọc, nhập/gửi tin trong phiên | **Đã có giao diện tương tác với dữ liệu mẫu**, chưa gửi tin nhắn qua mạng |
+| Cộng đồng / Voice & Video Call | Danh sách cuộc gọi, màn hình gọi thoại/video và điều khiển UI | **Đã có giao diện mô phỏng**, chưa thiết lập kết nối thoại/video thực tế |
 | Tối ưu hóa, AI nâng cao, thông báo đẩy | Lộ trình tiếp theo | **Chưa** triển khai hoàn chỉnh |
 
 ### Các nhóm chức năng nổi bật
@@ -81,6 +83,8 @@ Bảng sau phản ánh **những chức năng có mã nguồn trong nhánh `deve
 **Connectivity → Offline/Trip Readiness:** ước lượng rủi ro dựa trên các bằng chứng địa lý gián tiếp, sau đó hỗ trợ đánh giá dữ liệu cần chuẩn bị trước chuyến đi.
 
 **Group → Live Map → Convoy → Checkpoint:** thành viên tham gia chuyến đi, chủ động chia sẻ GPS, quan sát vị trí nhóm, nhận cảnh báo và theo dõi việc đến các điểm hẹn.
+
+**Social Feed → Community:** giao diện Trang chủ hiển thị bài đăng và các thao tác tương tác; mục Cộng đồng gồm danh sách hội thoại, trò chuyện và màn hình gọi. Dữ liệu hiện được giả lập cục bộ và chỉ phục vụ trải nghiệm giao diện; người dùng khác không nhận được bài đăng, tin nhắn hay cuộc gọi.
 
 ## 3. Kiến trúc hệ thống
 
@@ -165,8 +169,9 @@ PhuotThu/
 │       ├── map/                 # Search, route, POI
 │       ├── group_travel/        # Membership, invitation, live GPS,
 │       │                        # convoy, checkpoint và progress
-│       ├── home/
-│       └── community/           # Khung trang, chưa có social đầy đủ
+│       ├── home/                # Bảng tin xã hội, soạn bài, tương tác cục bộ
+│       ├── social_demo/         # Model và dữ liệu mẫu cho Social UI
+│       └── community/           # Danh sách chat, hội thoại, cuộc gọi mô phỏng
 ├── supabase/sql/                # SQL đã đưa vào repository
 ├── test/                        # Automated unit/widget tests
 ├── README.md                    # Tài liệu dự án tổng hợp
@@ -181,6 +186,11 @@ Các file trọng tâm để đọc mã:
 - [`lib/features/group_travel/presentation/trip_checkpoint_progress_page.dart`](lib/features/group_travel/presentation/trip_checkpoint_progress_page.dart): điểm danh và tiến độ.
 - [`lib/features/trips/presentation/pages/trip_track_page.dart`](lib/features/trips/presentation/pages/trip_track_page.dart): ghi/phát lại track cục bộ.
 - [`lib/features/trips/presentation/pages/trip_emergency_page.dart`](lib/features/trips/presentation/pages/trip_emergency_page.dart): nội dung vị trí hỗ trợ khẩn cấp.
+- [`lib/features/home/presentation/pages/home_page.dart`](lib/features/home/presentation/pages/home_page.dart): bảng tin và tương tác bài viết.
+- [`lib/features/community/presentation/pages/community_page.dart`](lib/features/community/presentation/pages/community_page.dart): danh sách hội thoại và cuộc gọi.
+- [`lib/features/community/presentation/pages/demo_chat_page.dart`](lib/features/community/presentation/pages/demo_chat_page.dart): màn hình nhắn tin cục bộ.
+- [`lib/features/community/presentation/pages/demo_call_page.dart`](lib/features/community/presentation/pages/demo_call_page.dart): màn hình cuộc gọi mô phỏng.
+- [`lib/features/social_demo/data/demo_social_data.dart`](lib/features/social_demo/data/demo_social_data.dart): dữ liệu bài đăng, liên hệ, tin nhắn và lịch sử cuộc gọi mẫu.
 
 ## 6. Yêu cầu môi trường
 
@@ -379,18 +389,25 @@ HAVING COUNT(*) > 1;
 - **Track/Replay:** bắt đầu ghi khi màn hình mở → có các điểm GPS → dừng → phát lại bằng marker/slider; track được lưu cục bộ theo chuyến và người dùng. **Không ghi nền và không đồng bộ đám mây.**
 - **Thông tin khẩn cấp:** lấy GPS theo quyền của thiết bị → tạo nội dung có tọa độ, thời điểm và đường dẫn bản đồ → người dùng **sao chép và tự chia sẻ**. **Không** có quy trình gửi SOS tự động hay xác nhận cứu hộ.
 
+### 9.4. Trang chủ và Cộng đồng
+
+- **Trang chủ:** duyệt danh sách bài đăng chuyến đi, tìm kiếm địa điểm/nội dung, xem bài nổi bật hoặc đã lưu, thích, bình luận và soạn bài mới trong phiên.
+- **Cộng đồng:** xem danh sách hội thoại cá nhân/nhóm, lọc chưa đọc, mở khung chat, gửi tin nhắn trong phiên; xem lịch sử cuộc gọi và mở giao diện gọi thoại/video.
+- **Phạm vi dữ liệu:** bài đăng và liên hệ được định nghĩa sẵn trong code; các thao tác chỉ cập nhật trạng thái cục bộ. **Không có** xác nhận đăng bài lên server, gửi tin cho người khác, nhận tin realtime hoặc gọi thật. Nhãn trên giao diện được tối giản để phù hợp bản trình diễn; phạm vi này phải được công bố rõ trong tài liệu và phần thuyết trình.
+
 ## 10. Kiểm thử và kết quả đã xác nhận
 
 ### 10.1. Automated QA
 
-Kết quả đã được ghi nhận trên máy phát triển Android vào **29/10/2026** (trước khi hợp nhất README):
+Kết quả đã được người phát triển xác nhận trên máy Windows/Android Emulator vào **29/10/2026** sau khi cập nhật giao diện Social Feed và Cộng đồng:
 
 | Hạng mục | Kết quả quan sát |
 | --- | --- |
 | `flutter analyze` | **No issues found** |
-| `flutter test` | **488/488 tests passed** |
-| `flutter build apk --debug` | **Build thành công** |
-| Git | Bộ chức năng mở rộng đã commit/push lên `develop` |
+| `flutter test --concurrency=1` | **492/492 tests passed** (bao gồm 4 bài test Social UI) |
+| `flutter build apk --debug` | **Build thành công ở mốc trước Social UI; chưa có xác nhận build lại cho bản Social UI** |
+| Social UI widget tests | **4/4 PASS**; kiểm tra bảng tin, chat, cuộc gọi và bố cục màn hình nhỏ |
+| Git | Bộ chức năng GPS/Checkpoint đã commit/push lên `develop`; Social UI được kiểm thử trên máy phát triển và sẽ được commit riêng |
 
 Đây là **kết quả chạy thực tế tại thời điểm trên**, không có nghĩa toàn bộ tính năng đã được kiểm thử mọi thiết bị, mọi mạng hoặc iOS. Chỉnh sửa README không thay đổi kết quả test ứng dụng, nhưng nếu có code change mới thì phải chạy lại.
 
@@ -402,6 +419,8 @@ Kết quả đã được ghi nhận trên máy phát triển Android vào **29/
 - Truy vấn tìm bản ghi điểm danh trùng trả về **0 hàng** tại thời điểm kiểm tra.
 - Track cục bộ ghi được **7 điểm GPS** trên Emulator; người dùng đã xác nhận marker phát lại lần lượt qua các điểm.
 - Màn hình hỗ trợ khẩn cấp lấy được vị trí và tạo nội dung để sao chép.
+- Giao diện **Trang chủ** đã hiển thị bảng tin bài viết với ảnh; **Cộng đồng** hiển thị danh sách chat. Người phát triển đã gửi ảnh chạy thực tế trên Android Emulator.
+- Bộ 4 bài kiểm thử widget Social UI xác nhận thao tác mở soạn bài, gửi tin nhắn trong giao diện, mở/kết thúc màn hình gọi và không tràn bố cục ở màn hình nhỏ.
 
 Các bài kiểm thử **chưa được chứng minh đầy đủ**: chống GPS giả mạo, GPS sai số lớn trong mọi tình huống, API/RLS kiểm thử đối kháng A/B, battery/background dài hạn, cài đặt APK release mới trên thiết bị độc lập, iOS và kiểm thử hiệu năng thực địa.
 
@@ -415,7 +434,8 @@ Các bài kiểm thử **chưa được chứng minh đầy đủ**: chống GPS
 6. Bản đồ nhóm, cảnh báo tách đoàn và tuổi GPS.
 7. Track/Replay trên Emulator và kiểm tra dữ liệu cục bộ sau mở lại.
 8. Sao chép thông tin khẩn cấp; xác nhận không có tác vụ tự gửi.
-9. Thử trên thiết bị Android cài đặt mới và điều kiện kết nối khác nhau.
+9. Kiểm tra Trang chủ: bảng tin, ảnh, tìm kiếm, thích/bình luận/lưu, mở soạn bài; kiểm tra Cộng đồng: lọc chat, gửi tin, mở/kết thúc màn hình gọi và kích thước màn hình nhỏ.
+10. Thử trên thiết bị Android cài đặt mới và điều kiện kết nối khác nhau.
 
 Các tình huống kiểm thử Checkpoint, GPS, quyền truy cập và APK được tổng hợp trong checklist nghiệm thu ở trên.
 
@@ -437,9 +457,10 @@ Các tình huống kiểm thử Checkpoint, GPS, quyền truy cập và APK đư
 4. **Checkpoint Progress:** arrivals đang làm mới định kỳ **10 giây**; không phải toàn bộ progress đẩy push tức thì.
 5. **GPS Track:** chỉ ghi khi màn hình ghi hành trình đang hoạt động; không ghi nền 24/7.
 6. **Emergency:** tạo/copy thông tin, không tự gửi cảnh báo, không gọi SOS tự động.
-7. **Community, chat, push notification, recommendation/optimization nâng cao:** chưa hoàn chỉnh.
-8. **Dữ liệu bên thứ ba:** phụ thuộc quota, độ phủ, chính sách sử dụng Nominatim/OSRM/OSM/Geoapify/Open-Meteo.
-9. **Vận hành:** chưa xác nhận đầy đủ monitoring/crash analytics, thử nghiệm thực địa quy mô lớn, kiểm thử bảo mật chuyên sâu.
+7. **Social/Community:** giao diện bảng tin, chat, gọi thoại/video đã có và có thể thao tác cục bộ; **chưa có** backend bài đăng, nhắn tin nhiều tài khoản, truyền âm thanh/video, thông báo đẩy hoặc quản lý dữ liệu mạng xã hội thực.
+8. **Push notification và recommendation/optimization nâng cao:** chưa hoàn chỉnh.
+9. **Dữ liệu bên thứ ba:** phụ thuộc quota, độ phủ, chính sách sử dụng Nominatim/OSRM/OSM/Geoapify/Open-Meteo.
+10. **Vận hành:** chưa xác nhận đầy đủ monitoring/crash analytics, thử nghiệm thực địa quy mô lớn, kiểm thử bảo mật chuyên sâu.
 
 ## 13. Lộ trình phát triển
 
@@ -447,7 +468,7 @@ Các tình huống kiểm thử Checkpoint, GPS, quyền truy cập và APK đư
 | --- | --- | --- |
 | **Đồ án cơ sở** | Trip Planner, Route, POI, Fuel/Budget | Đã có lõi hoạt động |
 | **Đồ án liên ngành** | Group Travel, invitation, Live Map, Convoy, Checkpoint, Safety/Offline | Các luồng chính đã có; tiếp tục tăng độ ổn định và hoàn thiện |
-| **Đồ án tốt nghiệp** | Replay nâng cao, offline-first, SOS/notification, tối ưu/gợi ý, đánh giá thực nghiệm | Cần tiếp tục phát triển và kiểm chứng |
+| **Đồ án tốt nghiệp** | Replay nâng cao, offline-first, SOS/notification, social/chat/call backend, tối ưu/gợi ý, đánh giá thực nghiệm | Cần tiếp tục phát triển và kiểm chứng |
 
 **Ưu tiên gần nhất:**
 
