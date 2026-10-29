@@ -170,7 +170,6 @@ PhuotThu/
 ├── supabase/sql/                # SQL đã đưa vào repository
 ├── test/                        # Automated unit/widget tests
 ├── README.md                    # Tài liệu dự án tổng hợp
-├── TEST_PLAN.md                 # Checklist kiểm thử bổ sung
 └── pubspec.yaml                 # Dependencies và cấu hình Dart/Flutter
 ```
 
@@ -418,7 +417,7 @@ Các bài kiểm thử **chưa được chứng minh đầy đủ**: chống GPS
 8. Sao chép thông tin khẩn cấp; xác nhận không có tác vụ tự gửi.
 9. Thử trên thiết bị Android cài đặt mới và điều kiện kết nối khác nhau.
 
-Xem thêm [`TEST_PLAN.md`](TEST_PLAN.md) để tham khảo các trường hợp kiểm thử đặc thù của gói mở rộng.
+Các tình huống kiểm thử Checkpoint, GPS, quyền truy cập và APK được tổng hợp trong checklist nghiệm thu ở trên.
 
 ## 11. Bảo mật, quyền riêng tư và an toàn
 
