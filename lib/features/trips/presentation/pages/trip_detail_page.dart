@@ -15,6 +15,8 @@ import '../../../group_travel/domain/trip_member_view.dart';
 import '../../../group_travel/presentation/trip_group_live_map_page.dart';
 import '../../../group_travel/presentation/trip_checkpoint_management_page.dart';
 import '../../../vehicle/data/vehicle_providers.dart';
+import 'trip_emergency_page.dart';
+import 'trip_track_page.dart';
 import '../../../vehicle/domain/vehicle.dart';
 import '../../data/trip_budget_providers.dart';
 import '../../data/trip_providers.dart';
@@ -1205,7 +1207,33 @@ class TripDetailPage extends ConsumerWidget {
     final memberViewsAsync = ref.watch(tripMemberViewsProvider(tripId));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Chi tiết chuyến đi')),
+      appBar: AppBar(
+        title: const Text('Chi tiết chuyến đi'),
+        actions: [
+          IconButton(
+            tooltip: 'Ghi và phát lại hành trình',
+            icon: const Icon(Icons.route_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => TripTrackPage(tripId: tripId),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            tooltip: 'Thông tin hỗ trợ khẩn cấp',
+            icon: const Icon(Icons.sos_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => TripEmergencyPage(tripName: tripId),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
         child: tripAsync.when(
           loading: () {

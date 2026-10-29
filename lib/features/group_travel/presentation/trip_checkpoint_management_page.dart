@@ -6,6 +6,7 @@ import '../data/trip_checkpoint_providers.dart';
 import '../domain/group_trip_state.dart';
 import '../domain/trip_checkpoint.dart';
 import 'trip_checkpoint_editor_page.dart';
+import 'trip_checkpoint_progress_page.dart';
 
 class TripCheckpointManagementPage extends ConsumerStatefulWidget {
   const TripCheckpointManagementPage({required this.tripId, super.key});
@@ -274,6 +275,18 @@ class _TripCheckpointManagementPageState
       appBar: AppBar(
         title: const Text('Điểm hẹn / Checkpoint'),
         actions: [
+          IconButton(
+            tooltip: 'Tiến độ đoàn',
+            icon: const Icon(Icons.groups_3_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      TripCheckpointProgressPage(tripId: widget.tripId),
+                ),
+              );
+            },
+          ),
           IconButton(
             onPressed: _busy ? null : _refresh,
             icon: const Icon(Icons.refresh),
